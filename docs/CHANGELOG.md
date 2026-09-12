@@ -36,4 +36,13 @@ elsewhere:
 ## Unreleased
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
+
+### Added
+
+- fig-quickjs, a fig format written in JavaScript, at parity with fig-lua ([`9984c36`](https://github.com/diaryx-org/fig-quickjs/commit/9984c36ee060ced4e7703c909e3d3757bf743d1f))
+
+### Uncategorised — triage before release
+
+- Initial commit ([`4776d26`](https://github.com/diaryx-org/fig-quickjs/commit/4776d261e2d3d0f7b69d71f7e46d071e296cc8a7))
+
 <!-- git-cliff:end -->
