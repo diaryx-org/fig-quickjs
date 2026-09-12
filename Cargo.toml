@@ -1,14 +1,63 @@
 [package]
 name = "fig-quickjs"
-version = "0.0.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A fig format written in JavaScript: a helper the fig CLI spawns, and a Language the fig crate registers, over an ES module that parses and prints the format, run on QuickJS."
+readme = "README.md"
+documentation = "https://docs.rs/fig-quickjs"
+keywords = ["fig", "javascript", "quickjs", "config", "parser"]
+categories = ["config", "parser-implementations", "command-line-utilities"]
+publish = true
+
+# `xtask` is fig-quickjs's CI, as a program, as it is in fig-lua: `cargo xtask
+# <job>` runs one CI job and the workflow runs nothing else.
+[workspace]
+members = ["xtask"]
+
+# One `version = "…"` line for the whole repository, which is what `dx bump`
+# rewrites and what the package inherits.
+[workspace.package]
+version = "0.1.0"
 edition = "2024"
+# Minimum supported Rust version, enforced by the `msrv` CI job, which reads
+# this value. fig-lua's floor, which rquickjs 0.13 (1.87) is under.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-description = "Spike: a fig helper running a JavaScript Language under QuickJS."
-publish = false
+repository = "https://github.com/diaryx-org/fig-quickjs"
+
+# The helper executable: `fig-quickjs <module.mjs>` serves the module's format
+# to a `fig` binary over stdin and stdout. No feature flag — a `cargo install
+# fig-quickjs` is a working helper.
+[[bin]]
+name = "fig-quickjs"
+path = "src/main.rs"
 
 [dependencies]
-rquickjs = { version = "0.13", features = ["loader", "array-buffer", "macro"] }
+# The contract this crate implements: `fig::language::Language` is what a
+# module becomes, and the `helper` module's JSON shape is the shape a module
+# speaks — so the JavaScript side is documented once, there, and once more
+# as the `Language` type of `@diaryx/fig`, which is the same shape with the
+# same names. The default feature set, deliberately: it links fig's prebuilt
+# core, so `cargo install fig-quickjs` needs no Zig toolchain, at the price
+# of carrying formats a helper never uses.
+fig = "4"
+# QuickJS-ng, vendored: the engine is built into the binary, so a helper is
+# one file with no runtime to install beside it. `loader` for the module
+# resolver that serves `fig`, `fig/grammar` and `@diaryx/fig/helper` from
+# the binary; `array-buffer` for the `Uint8Array` the scanner works over.
+rquickjs = { version = "0.13", features = ["loader", "array-buffer"] }
+
+# No dev-dependencies: the tests hold `dotenv.mjs` to the compiled dotenv
+# in-process, and dotenv is in fig's default set. plist and canonical are
+# not — they would mean building fig's core from source, with a Zig
+# toolchain — so those twins are held to their siblings table for table,
+# through the fixtures `fig lang table -i <format>` printed.
 
 [profile.release]
+# A helper is spawned per `fig` invocation; its size and start-up are what
+# a user feels.
 lto = true
 codegen-units = 1
