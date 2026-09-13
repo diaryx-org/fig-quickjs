@@ -1,5 +1,6 @@
 // The `fig` module a fig-quickjs language imports. Served from the binary,
-// as `fig/grammar` and `fig/xml` — the two modules built on it — are.
+// as `fig/grammar`, `fig/xml`, `fig/number` and `fig/datetime` — the
+// modules built beside it — are.
 //
 // Three layers, each written in terms of the one below:
 //
@@ -327,6 +328,95 @@ export function binOf(s) {
   return s;
 }
 
+/** The UTF-8 bytes of the codepoint `cp`, as an array of byte values —
+ *  for a string decoder that builds its text byte by byte. */
+export function utf8Bytes(cp) {
+  if (cp < 0x80) return [cp];
+  if (cp < 0x800) return [0xc0 | (cp >> 6), 0x80 | (cp & 0x3f)];
+  if (cp < 0x10000) return [0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)];
+  return [0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f)];
+}
+
+/** Whether `cp` is a UTF-16 surrogate, high or low: a codepoint no text
+ *  can hold on its own. */
+export function isSurrogate(cp) {
+  return cp >= 0xd800 && cp <= 0xdfff;
+}
+
+/** The codepoint a `\uXXXX\uXXXX` surrogate pair spells, or null when
+ *  `hi` and `lo` are not a high surrogate followed by a low one. */
+export function surrogatePair(hi, lo) {
+  if (hi >= 0xd800 && hi <= 0xdbff && lo >= 0xdc00 && lo <= 0xdfff) {
+    return 0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00);
+  }
+  return null;
+}
+
+/** A comment's text as the wire carries it: `raw` with the spaces, tabs
+ *  and carriage returns at either end removed. */
+export function trimComment(raw) {
+  return raw.replace(/^[ \t\r]+|[ \t\r]+$/g, "");
+}
+
+// ── the token cursor ──────────────────────────────────────────────────────
+// A parser written over a token list rather than a grammar — one whose
+// tokenizer runs first — walks the list with this: `peek`, `advance`, the
+// text a token covers, and a failure at the token in hand.
+
+export class Cursor {
+  /** A cursor over `tokens` — each `{ kind, s, e }` over byte offsets,
+   *  the last an end-of-input token the cursor never moves past — reading
+   *  text through scanner `sc`. */
+  constructor(tokens, sc) {
+    this.tokens = tokens;
+    this.sc = sc;
+    this.pos = 0;
+  }
+
+  /** The token in hand. */
+  peek() {
+    return this.tokens[this.pos];
+  }
+
+  /** The token `k` (1) past the one in hand, or the last. */
+  ahead(k) {
+    return this.tokens[Math.min(this.pos + (k ?? 1), this.tokens.length - 1)];
+  }
+
+  /** The token in hand, moving to the next unless it is the last. */
+  advance() {
+    const t = this.tokens[this.pos];
+    if (this.pos < this.tokens.length - 1) this.pos += 1;
+    return t;
+  }
+
+  /** Whether the token in hand is of `kind`. */
+  at(kind) {
+    return this.tokens[this.pos].kind === kind;
+  }
+
+  /** The token in hand when it is of `kind`, moving past it; else null. */
+  take(kind) {
+    return this.at(kind) ? this.advance() : null;
+  }
+
+  /** The text `t` (the token in hand) covers. */
+  text(t) {
+    t ??= this.tokens[this.pos];
+    return this.sc.slice(t.s, t.e);
+  }
+
+  /** `fail` at the start of `t` (the token in hand). */
+  fail(message, t) {
+    fail(message, (t ?? this.tokens[this.pos]).s);
+  }
+}
+
+/** A cursor over `tokens`, reading through `sc`. */
+export function cursor(tokens, sc) {
+  return new Cursor(tokens, sc);
+}
+
 // ── the scanner ───────────────────────────────────────────────────────────
 // A cursor over the input whose `pos` is a 0-based byte offset, so every
 // span it hands out is the wire's. Nothing here advances on a miss.
@@ -479,6 +569,22 @@ export class Writer {
     return this.indent(depth).put(...parts).nl();
   }
 
+  /** Write `comments` (a row's `leading`, say) as full lines, each line
+   *  of each comment's text on its own, trimmed, after `leader` and a
+   *  space — `# text`, or the bare leader for an empty line — indented by
+   *  `depth` (0). Answers whether anything was written. */
+  comments(comments, leader, depth) {
+    let wrote = false;
+    for (const c of comments) {
+      for (const line of c.text.split("\n")) {
+        const t = line.replace(/^[ \t]+|[ \t]+$/g, "");
+        this.indent(depth ?? 0).put(t === "" ? leader : leader + " " + t, "\n");
+        wrote = true;
+      }
+    }
+    return wrote;
+  }
+
   string() {
     return this.parts.join("");
   }
@@ -510,6 +616,12 @@ export default {
   toBin,
   fromBin,
   binOf,
+  utf8Bytes,
+  isSurrogate,
+  surrogatePair,
+  trimComment,
+  Cursor,
+  cursor,
   Scanner,
   scanner,
   stickyOf,

@@ -39,6 +39,8 @@ const MODULES: &[(&str, &str)] = &[
     ("fig", include_str!("../js/fig.js")),
     ("fig/grammar", include_str!("../js/grammar.js")),
     ("fig/xml", include_str!("../js/xml.js")),
+    ("fig/number", include_str!("../js/number.js")),
+    ("fig/datetime", include_str!("../js/datetime.js")),
 ];
 
 /// What QuickJS lacks that a language assumes.
@@ -371,7 +373,7 @@ impl Resolver for Modules {
             _ => Err(rquickjs::Error::new_resolving_message(
                 base,
                 name,
-                "not one of the modules fig-quickjs serves (fig, fig/grammar, fig/xml, @diaryx/fig/helper), and not a file",
+                "not one of the modules fig-quickjs serves (fig, fig/grammar, fig/xml, fig/number, fig/datetime, @diaryx/fig/helper), and not a file",
             )),
         }
     }

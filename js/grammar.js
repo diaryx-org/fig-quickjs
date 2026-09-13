@@ -16,7 +16,9 @@
 // same line as the last node completed is that node's trailing comment;
 // any other waits, and becomes the leading comment of the next entry (on
 // its key, by default) or, when a container closes with it still waiting,
-// a dangling comment of that container.
+// a dangling comment of that container. That is the policy every format
+// fig compiles in shares; `context(sc, opts)` — or `document({ comments
+// })` — takes the three refinements some of them add.
 //
 // Every offset is a byte offset: a rule reads the scanner's bytes or its
 // one-char-per-byte `bin`, never the input string. A regular expression
@@ -26,22 +28,47 @@ import * as fig from "fig";
 
 // ── the context ───────────────────────────────────────────────────────────
 
+const isContainer = (n) => n.kind === "mapping" || n.kind === "sequence";
+
 export class Context {
-  /** A binding context over `sc`. */
-  constructor(sc) {
+  /** A binding context over `sc`. `opts` refines what trails:
+   *  `endsLine` (false) — a comment trails only when it is the last thing
+   *  on its line, so a block comment with more after it on the line waits
+   *  instead; `one` (false) — a node takes one trailing comment, a second
+   *  on the same line waiting like any other; `closingLine` (false) — a
+   *  container that spans lines takes the comment on its closing line as
+   *  dangling rather than trailing. */
+  constructor(sc, opts) {
     this.sc = sc;
     this.pending = [];
     this.last = null;
+    this.endsLine = opts?.endsLine === true;
+    this.one = opts?.one === true;
+    this.closingLine = opts?.closingLine === true;
   }
 
   /** A comment `[s, e]` with `text` and `style`, met in trivia. */
   comment(c) {
-    if (this.last && this.sc.sameLine(this.last.span[1], c[0])) {
-      this.last.comment("trailing", c.text, c.style);
+    const last = this.last;
+    if (last && this.sc.sameLine(last.span[1], c[0]) && (!this.endsLine || this.restIsBlank(c[1]))) {
+      if (this.closingLine && isContainer(last) && !this.sc.sameLine(last.span[0], last.span[1])) {
+        last.comment("dangling", c.text, c.style);
+      } else {
+        last.comment("trailing", c.text, c.style);
+      }
+      if (this.one) this.last = null;
     } else {
       this.pending.push(c);
       this.last = null;
     }
+  }
+
+  /** Whether only spaces and tabs lie between `at` and the line's end. */
+  restIsBlank(at) {
+    const { bin } = this.sc;
+    let i = at;
+    while (i < bin.length && (bin[i] === " " || bin[i] === "\t")) i += 1;
+    return i >= bin.length || bin[i] === "\n" || bin[i] === "\r";
   }
 
   /** Give every waiting comment to `node`, in `slot`. */
@@ -51,9 +78,9 @@ export class Context {
   }
 }
 
-/** A binding context over `sc`. */
-export function context(sc) {
-  return new Context(sc);
+/** A binding context over `sc`, with `opts` as `Context` takes them. */
+export function context(sc, opts) {
+  return new Context(sc, opts);
 }
 
 // ── primitives ────────────────────────────────────────────────────────────
@@ -566,8 +593,9 @@ export function sequence(opts) {
  *  then the end of the input, or `opts.trailing` (a message, or a function
  *  of the scanner giving one). `opts.bom` skips a byte-order mark;
  *  `opts.missing` is the message when the root does not match. Comments
- *  left waiting are the root's dangling comments. The function answers
- *  the wire's node table.
+ *  left waiting are the root's dangling comments; `opts.comments` refines
+ *  how they bind, as `context` takes it. The function answers the wire's
+ *  node table.
  *
  *  There is no `utf8` option: the input reaches a language as a string
  *  the host already decoded, so what is not UTF-8 never arrives. */
@@ -576,7 +604,7 @@ export function document(opts) {
   return (_dialect, input) => {
     const sc = fig.scanner(input);
     if (opts.bom && sc.bytes[0] === 0xef && sc.bytes[1] === 0xbb && sc.bytes[2] === 0xbf) sc.pos = 3;
-    const ctx = context(sc);
+    const ctx = context(sc, opts.comments);
     if (between) between(sc, ctx);
     const r = root(sc, ctx);
     if (r == null) sc.fail(opts.missing ?? "no document here");
