@@ -74,3 +74,98 @@ fn the_readme_example_registers_prints_and_edits() {
     ed.insert_value(&[], "c", "3").unwrap();
     assert_eq!(ed.source().unwrap(), "a=one\n# two\nb=two # words\nc=3\n");
 }
+
+/// A section format small enough to read whole: `[name]` opens a section
+/// or re-enters one, `k=v` is an entry, `#` a comment, `>` in front of a
+/// line its depth. Every region, mention and comment comes from
+/// `G.sections`; only what a header means is the module's.
+const TINYSECTIONS: &str = r##"
+import * as fig from "fig";
+import * as G from "fig/grammar";
+function parse(_dialect, input) {
+  const sc = fig.scanner(input);
+  const { bin } = sc;
+  const S = G.sections(bin);
+  const root = fig.mapping([0, sc.n]);
+  let current = root;
+  let pos = 0;
+  while (pos < sc.n) {
+    let nl = bin.indexOf("\n", pos);
+    if (nl < 0) nl = sc.n;
+    const line = bin.slice(pos, nl);
+    const depth = line.match(/^>*/)[0].length;
+    const body = line.slice(depth);
+    const at = pos + depth;
+    if (body.startsWith("#")) {
+      S.comment(body.slice(1), depth);
+    } else if (body.startsWith("[")) {
+      const name = body.slice(1, -1);
+      const span = [at + 1, at + 1 + name.length];
+      const e = root.byKey.get(name);
+      if (e) {
+        S.reopen(e.value, span, "header");
+        current = e.value;
+      } else {
+        const key = fig.scalar("string", span, name);
+        S.claim(key, "leading");
+        current = S.open(root, fig.entry(key, fig.mapping(span)), "header");
+      }
+    } else if (body !== "") {
+      const eq = body.indexOf("=");
+      const key = fig.scalar("string", [at, at + eq], body.slice(0, eq));
+      S.claim(key, "leading", depth);
+      current.put(fig.entry(key, fig.scalar("string", [at + eq + 1, at + body.length], body.slice(eq + 1))));
+    }
+    pos = nl + 1;
+  }
+  S.claim(current, "dangling");
+  return fig.rows(root);
+}
+export default { name: "tinysections", caps: { read: true }, dialects: [{ name: "tinysections", extensions: ["tsec"] }], parse };
+"##;
+
+#[test]
+fn sections_record_the_header_lines_the_names_and_the_waiting_comments() {
+    let lang = JsLanguage::from_source("tinysections.mjs", TINYSECTIONS).unwrap();
+    let table = lang
+        .parse(
+            "tinysections",
+            b"# about a\n[a]\nx=1\n[b]\n[a]\ny=2\n# end\n",
+        )
+        .unwrap();
+    let v = fig::helper::table_to_value(&table);
+    let regions = fig::helper::encode(v.get("regions").unwrap());
+    // `[a]` at 10, `[b]` at 18, `[a]` again at 22: each whole line, newline
+    // included, on the section it opened or re-entered — `a` is node 3
+    // (root, keyvalue, key, mapping), `b` node 12.
+    assert_eq!(
+        regions,
+        r#"[{"node":3,"start":10,"end":14},{"node":3,"start":22,"end":26},{"node":12,"start":18,"end":22}]"#
+    );
+    let mentions = fig::helper::encode(v.get("mentions").unwrap());
+    assert_eq!(
+        mentions,
+        r#"[{"node":3,"span":[11,12],"kind":"header"},{"node":3,"span":[23,24],"kind":"header"},{"node":12,"span":[19,20],"kind":"header"}]"#
+    );
+    let comments = fig::helper::encode(v.get("comments").unwrap());
+    assert_eq!(
+        comments,
+        r#"[{"node":2,"slot":"leading","style":"line","text":" about a"},{"node":3,"slot":"dangling","style":"line","text":" end"}]"#
+    );
+}
+
+#[test]
+fn sections_take_the_waiting_comments_by_depth() {
+    let lang = JsLanguage::from_source("tinysections.mjs", TINYSECTIONS).unwrap();
+    // A key at depth 1 claims only the comments at its depth or deeper;
+    // the shallower one keeps waiting, and dangles at the end.
+    let table = lang
+        .parse("tinysections", b"[s]\n#shallow\n>#deep\n>k=v\n")
+        .unwrap();
+    let v = fig::helper::table_to_value(&table);
+    let comments = fig::helper::encode(v.get("comments").unwrap());
+    assert_eq!(
+        comments,
+        r#"[{"node":3,"slot":"dangling","style":"line","text":"shallow"},{"node":5,"slot":"leading","style":"line","text":"deep"}]"#
+    );
+}

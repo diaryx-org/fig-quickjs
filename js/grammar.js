@@ -8,7 +8,9 @@
 // `eol`) return spans; the fig-aware rules (`key`, `scalar`, `quoted`,
 // `bare`, `entry`, `map`, `sequence`) return tree nodes, with the spans,
 // the comment binding and the duplicate policy taken care of; `document`
-// turns a root rule into a `parse` function.
+// turns a root rule into a `parse` function. `sections`, at the end, is
+// not a rule: it is what a format of header lines — INI, TOML, fig —
+// shares when its parser is written by hand.
 //
 // Comments are bound by the context as trivia is skipped: a comment on the
 // same line as the last node completed is that node's trailing comment;
@@ -586,4 +588,94 @@ export function document(opts) {
     ctx.flush(r, "dangling");
     return fig.rows(r);
   };
+}
+
+// ── sections ──────────────────────────────────────────────────────────────
+// A section format — INI, TOML, fig — opens a container with a header
+// line and may re-enter it with another, and the wire asks the same of
+// each: a *region* for every line that opened or re-entered the
+// container, the whole physical line, newline included; a *mention* for
+// every place its name is written; and comments placed by where they
+// fell — waiting until the next key claims them as leading, or dangling
+// on the container that was open when its run ended. What a header
+// *means* — which containers it may re-enter, what its dots and brackets
+// say, where the cursor goes — differs in each, and stays in the parser.
+
+/** The whole physical line holding `at`, newline included: what a header
+ *  line contributes to its container's regions. `bin` is the input one
+ *  char per byte, as a scanner's `bin`. */
+export function lineRegion(bin, at) {
+  let s = at;
+  while (s > 0 && bin.charCodeAt(s - 1) !== 10) s -= 1;
+  let e = at;
+  while (e < bin.length && bin.charCodeAt(e) !== 10) e += 1;
+  if (e < bin.length) e += 1;
+  return [s, e];
+}
+
+export class Sections {
+  /** A section context over `bin`. */
+  constructor(bin) {
+    this.bin = bin;
+    this.pending = [];
+  }
+
+  lineRegion(at) {
+    return lineRegion(this.bin, at);
+  }
+
+  /** The line holding `at`, as a region of `node`. */
+  region(node, at) {
+    (node.regions ??= []).push(this.lineRegion(at));
+  }
+
+  /** `span`, where the name of `node` is written, as a mention of `kind`
+   *  ("header" or "entry"). */
+  mention(node, span, kind) {
+    (node.mentions ??= []).push({ span, kind });
+  }
+
+  /** Open a section: `entry`, a keyvalue over the container, goes into
+   *  `parent`; the line holding its key is the container's first region,
+   *  and the key its first mention, of `kind`. Returns the container. */
+  open(parent, entry, kind) {
+    parent.put(entry);
+    this.region(entry.value, entry.key.span[0]);
+    this.mention(entry.value, entry.key.span, kind);
+    return entry.value;
+  }
+
+  /** Re-enter `node` by a header that names it at `span`: another region,
+   *  another mention, of `kind`. */
+  reopen(node, span, kind) {
+    this.region(node, span[0]);
+    this.mention(node, span, kind);
+  }
+
+  /** A comment waiting for its key, met on a line at `depth` (0) — a
+   *  format whose lines have no depth leaves it — of `style` ("line"). */
+  comment(text, depth = 0, style = "line") {
+    this.pending.push({ text, depth, style });
+  }
+
+  /** Take the waiting comments from lines at `depth` (0: every one) or
+   *  deeper, in order; the shallower ones keep waiting. */
+  take(depth = 0) {
+    const taken = [];
+    const kept = [];
+    for (const c of this.pending) (c.depth >= depth ? taken : kept).push(c);
+    this.pending = kept;
+    return taken;
+  }
+
+  /** Give the waiting comments at `depth` or deeper to `node`, in `slot`
+   *  ("leading" for a key, "dangling" for a container). */
+  claim(node, slot, depth = 0) {
+    for (const c of this.take(depth)) node.comment(slot, c.text, c.style);
+  }
+}
+
+/** A section context over `bin`. */
+export function sections(bin) {
+  return new Sections(bin);
 }

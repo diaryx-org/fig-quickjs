@@ -83,7 +83,10 @@ pub mod module {
     //! byteOffset)`, from anywhere; any other error it throws is reported
     //! without an offset. Most modules write neither by hand:
     //! `import * as G from "fig/grammar"` is a set of rules whose results
-    //! are these nodes, and `G.document({...})` is a `parse` function.
+    //! are these nodes, and `G.document({...})` is a `parse` function. A
+    //! format of header lines, whose parser is its own, takes
+    //! `G.sections(bin)` for the regions, the mentions and the waiting
+    //! comments every section format records alike.
     //!
     //! `print(dialect, t, options)` receives the node table as parsed —
     //! `fig.index(t)` is its first line, after which every row has `id`,
