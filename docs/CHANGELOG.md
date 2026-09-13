@@ -29,9 +29,12 @@ elsewhere:
   held to its compiled sibling row for row, so a span that moves in
   `dotenv.mjs` is a span that moves for whoever reads it through `fig`, even
   when the compiled format moved first and the module is only following.
+  What a twin says when it refuses a document is its own, and a reworded
+  message is not one of these.
 - **Anything that changes what the served modules do** — `fig`,
-  `fig/grammar`, `fig/xml`: a field a row gains, an id that renumbers, a
-  helper that starts trimming. Every module ever written runs against them.
+  `fig/grammar`, `fig/xml`, `fig/number`, `fig/datetime`: a field a row
+  gains, an id that renumbers, a helper that starts trimming. Every module
+  ever written runs against them.
 
 ## Unreleased
 
