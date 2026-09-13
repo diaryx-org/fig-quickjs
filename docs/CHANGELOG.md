@@ -43,6 +43,7 @@ elsewhere:
 - json.mjs, the twin of fig's compiled json format ([`498514e`](https://github.com/diaryx-org/fig-quickjs/commit/498514ec631e1dcc3fa209248e4f7a7bbda72f32))
 - toml.mjs, the twin of fig's compiled toml format ([`88d27a1`](https://github.com/diaryx-org/fig-quickjs/commit/88d27a166744c3f52152cbed490a479f134b5661))
 - ini.mjs, the twin of fig's compiled ini format ([`d27a961`](https://github.com/diaryx-org/fig-quickjs/commit/d27a961a7dfcb44d79d72fc2e109663ffaf6b45c))
+- fig.mjs, the twin of fig's own authoring dialect ([`18d5235`](https://github.com/diaryx-org/fig-quickjs/commit/18d523504ea85c428815ba8fddee0b2eb806687a))
 
 ### Fixed
 
