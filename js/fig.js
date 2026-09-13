@@ -54,6 +54,7 @@ export class Table {
     this.comments = [];
     this.regions = [];
     this.mentions = [];
+    this.directives = [];
   }
 
   /** Add one row and return its id. `kind` is one of "null", "bool",
@@ -91,6 +92,14 @@ export class Table {
   mention(node, span, kind) {
     this.mentions.push({ node, span, kind });
   }
+
+  /** Record one tag-handle declaration of the document (a YAML `%TAG`):
+   *  `handle` is `!e!`, or a redefined `!`/`!!`, and `prefix` what it
+   *  expands to. A print of a whole document receives them back, in
+   *  this order, to re-emit above any tag that uses one. */
+  directive(handle, prefix) {
+    this.directives.push({ handle, prefix });
+  }
 }
 
 /** A new, empty node table. Rows are added in pre-order: a container before
@@ -115,6 +124,7 @@ export function index(t) {
   t.comments ??= [];
   t.regions ??= [];
   t.mentions ??= [];
+  t.directives ??= [];
   t.rows.forEach((row, i) => {
     row.id = i;
     row.children = [];

@@ -34,7 +34,7 @@ export class LanguageError extends Error {
 export function describe(lang) {
     return {
         name: lang.name,
-        caps: { read: !!lang.caps.read, edit: !!lang.caps.edit, serialize: !!lang.caps.serialize },
+        caps: { read: !!lang.caps.read, edit: !!lang.caps.edit, serialize: !!lang.caps.serialize, references: !!lang.caps.references },
         max_mapping_depth: lang.max_mapping_depth ?? null,
         lossless: lang.lossless ?? null,
         syntax: lang.syntax ?? null,
@@ -85,7 +85,9 @@ function handleInner(lang, requestLine) {
                 throw new LanguageError("parse: dialect and input are strings");
             }
             const table = lang.parse(req.dialect, req.input);
-            return { ok: true, table: { rows: table.rows, regions: table.regions ?? [], mentions: table.mentions ?? [], comments: table.comments ?? [] } };
+            const out = { rows: table.rows, regions: table.regions ?? [], mentions: table.mentions ?? [], comments: table.comments ?? [] };
+            if (table.directives && table.directives.length > 0) out.directives = table.directives;
+            return { ok: true, table: out };
         }
         case "print": {
             if (!lang.print)

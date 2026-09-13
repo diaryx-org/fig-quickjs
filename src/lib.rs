@@ -60,7 +60,7 @@ pub mod module {
     //!
     //! export default {
     //!   name: "js-dotenv",
-    //!   caps: { read: true, edit: true, serialize: true },
+    //!   caps: { read: true, edit: true, serialize: true }, // and `references` for a format with anchors, aliases and tags
     //!   max_mapping_depth: 0,
     //!   syntax: { comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } }, kv_sep: "=", empty_map_literal: "{}" },
     //!   dialects: [{ name: "js-dotenv", extensions: ["env"], splice: "raw", empty_doc_seed: "" }],
@@ -75,7 +75,9 @@ pub mod module {
     //! `parse(dialect, input)` takes the input as a string and returns the
     //! wire's **node table**: `rows` in pre-order, each `{kind, parent,
     //! span: [s, e], text, ...}` with `parent` a 0-based row id or `null`
-    //! for the root; `comments`, `regions`, `mentions`. `fig.table()` and
+    //! for the root; `comments`, `regions`, `mentions`, and `directives`
+    //! for a format with tag-handle declarations (YAML's `%TAG`;
+    //! `t.directive(handle, prefix)`). `fig.table()` and
     //! `t.row(...)` build one by hand; a **tree** — nodes built with
     //! `fig.mapping`, `fig.sequence`, `fig.entry` and `fig.scalar`, holding
     //! their children and comments as fields — becomes one through
