@@ -45,6 +45,8 @@ elsewhere:
 - ini.mjs, the twin of fig's compiled ini format ([`d27a961`](https://github.com/diaryx-org/fig-quickjs/commit/d27a961a7dfcb44d79d72fc2e109663ffaf6b45c))
 - fig.mjs, the twin of fig's own authoring dialect ([`18d5235`](https://github.com/diaryx-org/fig-quickjs/commit/18d523504ea85c428815ba8fddee0b2eb806687a))
 - **grammar** — `G.sections`, what a format of header lines records alike ([`2bf1950`](https://github.com/diaryx-org/fig-quickjs/commit/2bf1950c90b198361048a8378b25498f0b0edea5))
+- **languages** — properties.mjs, the twin of fig's compiled `.properties` ([`1041c46`](https://github.com/diaryx-org/fig-quickjs/commit/1041c463a76a582587fdd1a1069128f98c517394))
+- **languages** — zon.mjs, the twin of fig's compiled ZON ([`95022c9`](https://github.com/diaryx-org/fig-quickjs/commit/95022c94d8d721f80a39f3dd1bff3d35dfeb4d77))
 
 ### Fixed
 
