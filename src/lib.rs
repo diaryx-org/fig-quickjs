@@ -118,7 +118,7 @@ pub mod module {
     //! no package lookup, and no TypeScript — a language is plain ES2023.
     //!
     //! `languages/json.mjs`, `languages/toml.mjs`, `languages/ini.mjs`,
-    //! `languages/dotenv.mjs`, `languages/plist.mjs` and
+    //! `languages/fig.mjs`, `languages/dotenv.mjs`, `languages/plist.mjs` and
     //! `languages/canonical.mjs` in this repository are complete modules;
     //! `js/fig.js`, `js/grammar.js` and `js/xml.js` are the modules they
     //! import.

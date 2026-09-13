@@ -33,12 +33,20 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Six modules ship in `languages/`, each the twin of a format fig compiles
+Seven modules ship in `languages/`, each the twin of a format fig compiles
 in and held to it row for row:
 
 - `json.mjs` — strict JSON, RFC 8259: the values, the escapes with
   surrogate pairs, the byte-order mark, no comments; the format everyone
   already knows, so the one to read first.
+- `fig.mjs` — fig's own authoring dialect, `.figl`, whole: `>` marker
+  depth, section headers and `a.b[]`/`+` append headers, `*` elements,
+  dotted keys, `key: type = value` annotations kept as tags, flow values
+  with the balanced-then-trailing rule that leaves a markdown link bare,
+  multiline strings, comments placed by their own depth; and the `fig
+  fmt` house style — sections, hoisting, dotted collapse, append groups,
+  multi-line flow — byte for byte, plus the `tail` renderer that
+  re-prints a block value one marker level below its key.
 - `ini.mjs` — `[section]` files: `key = value` lines, `;` and `#`
   comments, a reopened section merged into the first. The smaller section
   format, and the one to read beside `toml.mjs` for what a section is.
