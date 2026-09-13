@@ -40,9 +40,20 @@ elsewhere:
 ### Added
 
 - fig-quickjs, a fig format written in JavaScript, at parity with fig-lua ([`9984c36`](https://github.com/diaryx-org/fig-quickjs/commit/9984c36ee060ced4e7703c909e3d3757bf743d1f))
+- json.mjs, the twin of fig's compiled json format ([`498514e`](https://github.com/diaryx-org/fig-quickjs/commit/498514ec631e1dcc3fa209248e4f7a7bbda72f32))
+
+### Fixed
+
+- **engine** — give QuickJS a 16 MB stack, on a thread with twice that ([`e7d331b`](https://github.com/diaryx-org/fig-quickjs/commit/e7d331b2e6b05c4f8f5504b885da39b7cbb13200))
 
 ### Uncategorised — triage before release
 
 - Initial commit ([`4776d26`](https://github.com/diaryx-org/fig-quickjs/commit/4776d261e2d3d0f7b69d71f7e46d071e296cc8a7))
+
+### Behavioural changes
+
+- a module whose parse recursed past ~256 KB of stack
+used to be refused with "Maximum call stack size exceeded"; it now
+parses, up to 16 MB.
 
 <!-- git-cliff:end -->
