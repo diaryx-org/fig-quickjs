@@ -25,6 +25,9 @@ use std::thread::{self, JoinHandle};
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Ctx, Function, Module, Runtime, TypedArray};
 
+/// What QuickJS may use of its thread's stack, in bytes.
+const JS_STACK_BYTES: usize = 16 << 20;
+
 /// The modules served from the binary, by the name a language imports.
 ///
 /// `@diaryx/fig/helper` is the wire — `LanguageError`, `describe`,
@@ -126,6 +129,12 @@ impl Engine {
         let (ready, loaded) = mpsc::channel::<Result<(), String>>();
         let thread = thread::Builder::new()
             .name(format!("fig-quickjs {name}"))
+            // A grammar is recursive descent, one JS frame per nesting
+            // level and a few per rule, so a deeply nested document is a
+            // deep stack: the twins' JSON parses JSONTestSuite's 500
+            // nested arrays at ~3 MB, past QuickJS's 256 KB default. The
+            // thread gets twice what the engine is allowed to use.
+            .stack_size(2 * JS_STACK_BYTES)
             .spawn(move || run(name, text, dir, ready, inbox))
             .map_err(LoadError::Io)?;
         match loaded.recv() {
@@ -173,6 +182,7 @@ fn run(
             return;
         }
     };
+    rt.set_max_stack_size(JS_STACK_BYTES);
     let mut inline: HashMap<String, String> = MODULES
         .iter()
         .map(|(n, s)| ((*n).to_owned(), (*s).to_owned()))
