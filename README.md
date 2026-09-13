@@ -33,7 +33,7 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Seven modules ship in `languages/`, each the twin of a format fig compiles
+Nine modules ship in `languages/`, each the twin of a format fig compiles
 in and held to it row for row:
 
 - `json.mjs` — strict JSON, RFC 8259: the values, the escapes with
@@ -56,8 +56,18 @@ in and held to it row for row:
   it carries the regions and mentions the editor moves a table by, and
   the compiled printer's layout rules, width budget and all; held to
   the whole of toml-test, and its edits to the compiled format's bytes.
+- `zon.mjs` — Zig Object Notation, `.zon`: `.{ .field = value }` structs,
+  `.{ 1, 2 }` arrays, Zig's numbers, strings and `\\` multiline strings,
+  `.enum` and `'c'` literals kept as extended scalars, `//` comments
+  recovered from the gaps between nodes as the compiled walk recovers
+  them. The compiled parser is Zig's own `std.zig.Ast`, so this carries
+  as much of Zig's tokenizer and expression grammar as decides what ZON
+  is, and refuses the rest as the compiled one does.
 - `dotenv.mjs` — `.env` files: bash-identifier keys, an optional `export`,
   quoted and unquoted values, `#` comments, flat.
+- `properties.mjs` — Java `.properties`: `=`, `:` or a space between key
+  and value, backslash escapes on both, `\uXXXX`, line continuations,
+  `#` and `!` comments, flat.
 - `plist.mjs` — Apple property lists, the XML form: `dict`, `array`, typed
   scalars, `date` and `data`; and the two fragment renderers that spell an
   edited value as a typed element and an entry as `<key>` over it.
