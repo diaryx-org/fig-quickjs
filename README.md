@@ -33,12 +33,19 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Nine modules ship in `languages/`, each the twin of a format fig compiles
+Eleven modules ship in `languages/`, each the twin of a format fig compiles
 in and held to it row for row:
 
 - `json.mjs` — strict JSON, RFC 8259: the values, the escapes with
   surrogate pairs, the byte-order mark, no comments; the format everyone
   already knows, so the one to read first.
+- `json5.mjs` — JSONC and JSON5, two dialects from one module (`js-json5`
+  and `js-jsonc`), as the compiled JSON module is one parser with a
+  dialect switch: `//` and `/* */` comments bound the way the compiled
+  parser binds them, by the tokens around each one; and JSON5's unquoted
+  keys, single quotes, trailing commas, `Infinity`/`NaN`, hex and bare
+  dots. Written as the compiled state machine rather than as a grammar,
+  because the comments are what make these dialects.
 - `fig.mjs` — fig's own authoring dialect, `.figl`, whole: `>` marker
   depth, section headers and `a.b[]`/`+` append headers, `*` elements,
   dotted keys, `key: type = value` annotations kept as tags, flow values
@@ -68,6 +75,10 @@ in and held to it row for row:
 - `properties.mjs` — Java `.properties`: `=`, `:` or a space between key
   and value, backslash escapes on both, `\uXXXX`, line continuations,
   `#` and `!` comments, flat.
+- `nestedtext.mjs` — NestedText: indentation-nested dicts, lists and `>`
+  string blocks, multiline `: ` keys, one-line inline `{…}`/`[…]`, every
+  scalar a literal string; and the four renderers the compiled editor
+  spells its edits with — an entry, an item, a value's tail, a key.
 - `plist.mjs` — Apple property lists, the XML form: `dict`, `array`, typed
   scalars, `date` and `data`; and the two fragment renderers that spell an
   edited value as a typed element and an entry as `<key>` over it.
