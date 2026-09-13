@@ -41,6 +41,7 @@ elsewhere:
 
 - fig-quickjs, a fig format written in JavaScript, at parity with fig-lua ([`9984c36`](https://github.com/diaryx-org/fig-quickjs/commit/9984c36ee060ced4e7703c909e3d3757bf743d1f))
 - json.mjs, the twin of fig's compiled json format ([`498514e`](https://github.com/diaryx-org/fig-quickjs/commit/498514ec631e1dcc3fa209248e4f7a7bbda72f32))
+- toml.mjs, the twin of fig's compiled toml format ([`88d27a1`](https://github.com/diaryx-org/fig-quickjs/commit/88d27a166744c3f52152cbed490a479f134b5661))
 
 ### Fixed
 
