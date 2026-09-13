@@ -33,12 +33,18 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Four modules ship in `languages/`, each the twin of a format fig compiles
+Five modules ship in `languages/`, each the twin of a format fig compiles
 in and held to it row for row:
 
 - `json.mjs` — strict JSON, RFC 8259: the values, the escapes with
   surrogate pairs, the byte-order mark, no comments; the format everyone
   already knows, so the one to read first.
+- `toml.mjs` — TOML 1.1, whole: `[tables]`, `[[arrays of tables]]`,
+  dotted keys, inline tables, every string and number form, datetimes.
+  A *section* format, so it is what a runtime language looks like when
+  it carries the regions and mentions the editor moves a table by, and
+  the compiled printer's layout rules, width budget and all; held to
+  the whole of toml-test, and its edits to the compiled format's bytes.
 - `dotenv.mjs` — `.env` files: bash-identifier keys, an optional `export`,
   quoted and unquoted values, `#` comments, flat.
 - `plist.mjs` — Apple property lists, the XML form: `dict`, `array`, typed
