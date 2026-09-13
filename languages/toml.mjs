@@ -7,11 +7,12 @@
 // written against `fig lang table -i toml`, which prints that table. What
 // the compiled format accepts is stated in fig's `src/languages/toml/`
 // (`tokenizer.zig`, `parser.zig`, `printer.zig`), and this follows them
-// function for function. Where the grammar module would do, it is not
-// used: TOML is a section format, and what makes it one — the table a
-// `[header]` opens, the regions and mentions the editor moves a table by,
-// the rules for which line may extend which table — is exactly what the
-// compiled parser states by hand, so this states it by hand too.
+// function for function. The grammar module's rules would not do: TOML
+// is a section format, and the rules for which line may open or extend
+// which table are exactly what the compiled parser states by hand, so
+// this states them by hand too. What every section format shares — the
+// region a header line is, the mention a name is, the comments waiting
+// for a key — is the grammar module's `sections`, and comes from there.
 //
 // The shape, as the compiled parser builds it:
 //
@@ -50,6 +51,7 @@
 // the bytes a token covers. The same object `@diaryx/fig`'s
 // `registerLanguage` takes, so it serves the browser and Node unchanged.
 import * as fig from "fig";
+import * as G from "fig/grammar";
 
 // ── errors, as the compiled parser words them ─────────────────────────────
 
@@ -530,7 +532,7 @@ class Parser {
     this.tokens = tokens;
     this.pos = 0;
     this.v11 = v11;
-    this.pending = []; // comments waiting for a key
+    this.sections = G.sections(sc.bin); // regions, mentions, comments waiting for a key
     this.lastValue = null; // the node a same-line comment trails
     this.meta = new Map(); // per table: explicit / dotted / implicit / aot / inlineTable
   }
@@ -632,7 +634,7 @@ class Parser {
       this.lastValue.comment("trailing", text);
       this.lastValue = null;
     } else {
-      this.pending.push(text);
+      this.sections.comment(text);
     }
   }
 
@@ -670,35 +672,10 @@ class Parser {
     else this.skipInline();
   }
 
-  claimLeading(node) {
-    for (const text of this.pending) node.comment("leading", text);
-    this.pending = [];
-  }
-
-  claimDangling(node) {
-    for (const text of this.pending) node.comment("dangling", text);
-    this.pending = [];
-  }
-
   requireLineEnd() {
     this.skipInline();
     const k = this.peek().kind;
     if (k !== "newline" && k !== "end_of_file") this.fail(MESSAGES.TrailingContent);
-  }
-
-  // The whole physical line holding `at`, newline included: a region.
-  lineRegion(at) {
-    const { bin, n } = this.sc;
-    let s = at;
-    while (s > 0 && bin.charCodeAt(s - 1) !== 10) s -= 1;
-    let e = at;
-    while (e < n && bin.charCodeAt(e) !== 10) e += 1;
-    if (e < n) e += 1;
-    return [s, e];
-  }
-
-  recordHeader(node, at) {
-    (node.regions ??= []).push(this.lineRegion(at));
   }
 
   // ── keys ──
@@ -730,19 +707,24 @@ class Parser {
     return null;
   }
 
-  appendKeyValue(map, seg, value) {
+  keyOf(seg) {
     const key = fig.scalar("string", seg.span, seg.str);
-    this.claimLeading(key);
-    const e = fig.entry(key, value, [seg.span[0], value.span[1]]);
+    this.sections.claim(key, "leading");
+    return key;
+  }
+
+  appendKeyValue(map, seg, value) {
+    const e = fig.entry(this.keyOf(seg), value, [seg.span[0], value.span[1]]);
     map.entries.push(e);
     return e;
   }
 
-  createTable(parent, seg, meta) {
+  // A table `seg` names, opened under `parent`: its header line the first
+  // region, its name the first mention, of `kind`.
+  createTable(parent, seg, meta, kind) {
     const m = fig.mapping(seg.span, { duplicates: "keep" });
-    this.appendKeyValue(parent, seg, m);
+    this.sections.open(parent, fig.entry(this.keyOf(seg), m), kind);
     this.meta.set(m, meta);
-    this.recordHeader(m, seg.span[0]);
     return m;
   }
 
@@ -775,11 +757,11 @@ class Parser {
       const seg = segs[j];
       const child = this.lookupChild(cur, seg.str);
       if (child !== null) {
-        (child.mentions ??= []).push({ span: seg.span, kind: "header" });
+        // Passed through, not reopened: a mention and no region.
+        this.sections.mention(child, seg.span, "header");
         cur = this.descend(child, seg);
       } else {
-        cur = this.createTable(cur, seg, { implicit: true });
-        (cur.mentions ??= []).push({ span: seg.span, kind: "header" });
+        cur = this.createTable(cur, seg, { implicit: true }, "header");
       }
     }
     return cur;
@@ -794,12 +776,10 @@ class Parser {
         if (child.kind !== "mapping") this.failAt(seg.span[0], MESSAGES.DuplicateKey);
         const meta = this.meta.get(child) ?? {};
         if (meta.explicit || meta.inlineTable) this.failAt(seg.span[0], MESSAGES.DuplicateKey);
-        this.recordHeader(child, seg.span[0]);
-        (child.mentions ??= []).push({ span: seg.span, kind: "entry" });
+        this.sections.reopen(child, seg.span, "entry");
         cur = child;
       } else {
-        cur = this.createTable(cur, seg, { dotted: true });
-        (cur.mentions ??= []).push({ span: seg.span, kind: "entry" });
+        cur = this.createTable(cur, seg, { dotted: true }, "entry");
       }
     }
     return cur;
@@ -822,12 +802,10 @@ class Parser {
       const meta = this.meta.get(child) ?? {};
       if (meta.explicit || meta.dotted || meta.inlineTable) this.failAt(final.span[0], MESSAGES.DuplicateKey);
       this.meta.set(child, { explicit: true });
-      this.recordHeader(child, final.span[0]);
-      (child.mentions ??= []).push({ span: final.span, kind: "header" });
+      this.sections.reopen(child, final.span, "header");
       this.current = child;
     } else {
-      this.current = this.createTable(cur, final, { explicit: true });
-      (this.current.mentions ??= []).push({ span: final.span, kind: "header" });
+      this.current = this.createTable(cur, final, { explicit: true }, "header");
     }
   }
 
@@ -844,20 +822,17 @@ class Parser {
     if (child !== null) {
       const meta = this.meta.get(child) ?? {};
       if (child.kind !== "sequence" || !meta.aot) this.failAt(final.span[0], MESSAGES.DuplicateKey);
-      this.recordHeader(child, final.span[0]);
-      (child.mentions ??= []).push({ span: final.span, kind: "header" });
+      this.sections.reopen(child, final.span, "header");
       this.current = this.appendArrayElement(child);
     } else {
       const seq = fig.sequence(final.span);
-      this.appendKeyValue(cur, final, seq);
+      this.sections.open(cur, fig.entry(this.keyOf(final), seq), "header");
       this.meta.set(seq, { aot: true });
-      this.recordHeader(seq, final.span[0]);
-      (seq.mentions ??= []).push({ span: final.span, kind: "header" });
       this.current = this.appendArrayElement(seq);
     }
     // The element shares the array's span, so its `[[…]]` line is recorded
     // on the element too: the only way its header is findable.
-    this.recordHeader(this.current, final.span[0]);
+    this.sections.region(this.current, final.span[0]);
   }
 
   parseKeyValue() {
@@ -1021,7 +996,7 @@ function parse(_dialect, input) {
   }
   // Comments left at the end of the file dangle off the table the last
   // header opened.
-  p.claimDangling(p.current);
+  p.sections.claim(p.current, "dangling");
   return fig.rows(root);
 }
 

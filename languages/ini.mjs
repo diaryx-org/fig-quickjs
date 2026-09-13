@@ -34,6 +34,7 @@
 // The same object `@diaryx/fig`'s `registerLanguage` takes, so it serves
 // the browser and Node unchanged.
 import * as fig from "fig";
+import * as G from "fig/grammar";
 
 // ── errors, as the compiled parser words them ─────────────────────────────
 
@@ -128,22 +129,12 @@ function decodeValue(raw) {
   return raw;
 }
 
-// The whole physical line holding `at`, newline included: a region.
-function lineRegion(bin, at) {
-  let s = at;
-  while (s > 0 && bin.charCodeAt(s - 1) !== 10) s -= 1;
-  let e = at;
-  while (e < bin.length && bin.charCodeAt(e) !== 10) e += 1;
-  if (e < bin.length) e += 1;
-  return [s, e];
-}
-
 function parse(_dialect, input) {
   const sc = fig.scanner(input);
   const { bin } = sc;
   const tokens = tokenize(bin);
   let pos = 0;
-  let pending = [];
+  const S = G.sections(bin);
   const root = fig.mapping([0, sc.n]);
   let current = root;
 
@@ -154,15 +145,11 @@ function parse(_dialect, input) {
     return t;
   };
   const text = (t) => sc.slice(t.s, t.e);
-  const claim = (node, slot) => {
-    for (const c of pending) node.comment(slot, c);
-    pending = [];
-  };
   const skipBlank = () => {
     for (;;) {
       const k = peek().kind;
       if (k === "comment") {
-        pending.push(text(peek()).replace(/^[ \t\r]+|[ \t\r]+$/g, ""));
+        S.comment(text(peek()).replace(/^[ \t\r]+|[ \t\r]+$/g, ""));
         pos += 1;
       } else if (k === "newline") {
         pos += 1;
@@ -186,17 +173,12 @@ function parse(_dialect, input) {
     if (existing) {
       const m = existing.value;
       if (m.kind !== "mapping") fig.fail(MESSAGES.DuplicateKey, nameTok.s);
-      m.regions.push(lineRegion(bin, nameTok.s));
-      m.mentions.push({ span, kind: "header" });
+      S.reopen(m, span, "header");
       current = m;
     } else {
       const key = fig.scalar("string", span, name);
-      claim(key, "leading");
-      const m = fig.mapping(span);
-      m.regions = [lineRegion(bin, nameTok.s)];
-      m.mentions = [{ span, kind: "header" }];
-      root.put(fig.entry(key, m));
-      current = m;
+      S.claim(key, "leading");
+      current = S.open(root, fig.entry(key, fig.mapping(span)), "header");
     }
   };
 
@@ -215,7 +197,7 @@ function parse(_dialect, input) {
       span = [valueTok.s, valueTok.e];
     }
     const key = fig.scalar("string", [keyTok.s, keyTok.e], name);
-    claim(key, "leading");
+    S.claim(key, "leading");
     current.put(fig.entry(key, fig.scalar("string", span, decodeValue(raw))));
   };
 
@@ -227,7 +209,7 @@ function parse(_dialect, input) {
     else fig.fail(MESSAGES.UnexpectedToken, peek().s);
     skipBlank();
   }
-  claim(current, "dangling");
+  S.claim(current, "dangling");
   return fig.rows(root);
 }
 

@@ -42,11 +42,17 @@
 // What is not carried: the authoring-time warnings (a leading zero kept as
 // text, an indent that disagrees with its markers), which have no row.
 //
+// What fig shares with the other section formats — the region a header
+// line is, the mention a name is, the comments waiting for a key, by
+// depth — is the grammar module's `sections`; the frames, the markers and
+// what a header may re-enter are fig's own.
+//
 // Every offset is a byte offset: the parser walks the scanner's
 // one-char-per-byte shadow of the input (`sc.bin`) and decodes text from
 // the bytes a token covers. The same object `@diaryx/fig`'s
 // `registerLanguage` takes, so it serves the browser and Node unchanged.
 import * as fig from "fig";
+import * as G from "fig/grammar";
 
 // ── errors, as the compiled parser words them ─────────────────────────────
 
@@ -332,7 +338,7 @@ function classifyFlowBracket(bin, start) {
 
 const fail = (message, at) => fig.fail(message, at);
 
-const newContainer = () => ({ kind: "undecided", closed: false, bornOfAppend: false, entries: [], index: new Map(), elements: [], style: "undecided", reentries: [], reentryNames: [] });
+const newContainer = () => ({ kind: "undecided", closed: false, bornOfAppend: false, entries: [], index: new Map(), elements: [], style: "undecided", reentries: [] });
 const newNode = (value, span) => ({ value, span: span ?? [0, 0], leading: [], dangling: [], trailing: null, marker: null });
 
 const trimSpan = (bin, s, e) => {
@@ -414,7 +420,7 @@ class Parser {
     this.root = newContainer();
     this.root.isRoot = true;
     this.rootDangling = [];
-    this.pending = [];
+    this.sections = G.sections(sc.bin);
     this.stack = [];
     this.lastAppendSteps = null;
     this.curLineStart = 0;
@@ -605,10 +611,10 @@ class Parser {
 
   // ── comments and frames ──
 
-  drainPending() {
-    const out = this.pending.map((pc) => pc.text);
-    this.pending = [];
-    return out;
+  // The waiting comments from lines at `depth` (0: all of them) or deeper,
+  // as text: what the intermediate tree keeps of a comment.
+  drainPending(depth = 0) {
+    return this.sections.take(depth).map((c) => c.text);
   }
 
   closeFramesAbove(depth) {
@@ -616,14 +622,7 @@ class Parser {
       const frame = this.stack.pop();
       if (frame.container.kind === "undecided") this.fail("FigEmptyContainer");
       if (frame.container.bornOfAppend && frame.container.entries.length === 0) this.fail("FigEmptyContainer");
-      if (this.pending.length > 0) {
-        const keep = [];
-        for (const pc of this.pending) {
-          if (pc.depth >= frame.childDepth) frame.owner.dangling.push(pc.text);
-          else keep.push(pc);
-        }
-        this.pending = keep;
-      }
+      frame.owner.dangling.push(...this.drainPending(frame.childDepth));
     }
   }
 
@@ -773,8 +772,7 @@ class Parser {
       if (e) {
         if (e.value.value.kind !== "container") this.fail("FigDuplicateKey");
         const c = this.open(e.value.value.container);
-        c.reentries.push(k.span[0]);
-        c.reentryNames.push(k.span);
+        c.reentries.push({ at: k.span[0], name: k.span });
         return [c, e.value, e];
       }
       const child = newContainer();
@@ -798,7 +796,7 @@ class Parser {
       const el = s.elements[idx];
       if (el.value.kind !== "container") this.fail("FigKeyNotContainer");
       const c = this.open(el.value.container);
-      c.reentries.push(this.curLineStart);
+      c.reentries.push({ at: this.curLineStart });
       return [c, el, null];
     } else if (idx === s.elements.length) {
       const child = newContainer();
@@ -1328,7 +1326,7 @@ class Parser {
       this.advance();
       let j = this.pos;
       while (j < this.n && this.at(j) !== 10) j += 1;
-      this.pending.push({ text: trimComment(this.text(this.pos, j)), depth });
+      this.sections.comment(trimComment(this.text(this.pos, j)), depth);
       this.pos = j;
       this.skipToNextLine();
       return;
@@ -1341,16 +1339,22 @@ class Parser {
 // Containers widen to their last child's end here, so every span below is
 // final before the one above it is read.
 
-function lineRegion(bin, at) {
-  let s = at;
-  while (s > 0 && bin.charCodeAt(s - 1) !== 10) s -= 1;
-  let e = at;
-  while (e < bin.length && bin.charCodeAt(e) !== 10) e += 1;
-  if (e < bin.length) e += 1;
-  return [s, e];
+// A block container is a section: the line that created it is its first
+// region, and every header that re-entered it by its final segment adds a
+// region and, when the segment is a key, a mention.
+function isSection(node) {
+  const v = node.value;
+  return v.kind === "container" && !v.container.closed && !v.container.isRoot;
 }
 
-function buildNode(node, bin) {
+function reenter(S, built, c) {
+  for (const r of c.reentries) {
+    if (r.name) S.reopen(built, r.name, "entry");
+    else S.region(built, r.at);
+  }
+}
+
+function buildNode(S, node) {
   const v = node.value;
   let built;
   if (v.kind === "container") {
@@ -1362,33 +1366,33 @@ function buildNode(node, bin) {
       for (const e of c.entries) {
         const key = fig.scalar("string", e.keySpan, e.key);
         for (const t of e.keyLeading) key.comment("leading", t);
-        const value = buildNode(e.value, bin);
-        if (e.value.value.kind === "container" && !e.value.value.container.closed) {
-          value.mentions ??= [];
-          value.mentions.push({ span: e.keySpan, kind: "entry" });
-          for (const name of e.value.value.container.reentryNames) value.mentions.push({ span: name, kind: "entry" });
-        }
+        const value = buildNode(S, e.value);
         const kv = fig.entry(key, value, [e.keySpan[0], e.value.span[1]]);
         if (e.sepSpan) kv.sep = e.sepSpan;
         if (e.value.span[1] > end) end = e.value.span[1];
-        built.entries.push(kv);
+        if (isSection(e.value)) {
+          S.open(built, kv, "entry");
+          reenter(S, value, e.value.value.container);
+        } else {
+          built.put(kv);
+        }
       }
     } else {
       built = fig.sequence(undefined);
       for (const el of c.elements) {
-        const item = buildNode(el, bin);
+        const item = buildNode(S, el);
         if (el.span[1] > end) end = el.span[1];
         if (el.marker) item.marker = el.marker;
         for (const t of el.leading) item.comment("leading", t);
-        built.items.push(item);
+        built.add(item);
+        if (isSection(el)) {
+          S.region(item, el.span[0]);
+          reenter(S, item, el.value.container);
+        }
       }
     }
     if (end > node.span[1]) node.span[1] = end;
     built.span = [node.span[0], node.span[1]];
-    if (!c.closed && !c.isRoot) {
-      built.regions = [lineRegion(bin, node.span[0])];
-      for (const off of c.reentries) built.regions.push(lineRegion(bin, off));
-    }
   } else {
     const extra = {};
     if (v.extKind) extra.ext_kind = v.extKind;
@@ -1409,13 +1413,12 @@ function parseDocument(input) {
     p.processLine();
   }
   p.closeFramesAbove(0);
-  for (const pc of p.pending) p.rootDangling.push(pc.text);
-  p.pending = [];
+  p.rootDangling.push(...p.drainPending());
   // An empty document is an empty mapping.
   if (p.root.kind === "undecided") p.root.kind = "mapping";
   const rootWrap = newNode({ kind: "container", container: p.root }, [0, 0]);
   rootWrap.dangling = p.rootDangling;
-  return buildNode(rootWrap, sc.bin);
+  return buildNode(p.sections, rootWrap);
 }
 
 function parse(_dialect, input) {
