@@ -33,18 +33,17 @@
 // serves the browser and Node unchanged.
 import * as fig from "fig";
 import * as G from "fig/grammar";
+import * as N from "fig/number";
 
-// ── errors, as the compiled parser words them ─────────────────────────────
-// Nearly everything is `UnexpectedToken`: the compiled tokenizer runs first
-// and its refusals are what a document meets, so the parser's more specific
-// messages (a missing colon, an unquoted key) are not reached.
+// ── refusals ──────────────────────────────────────────────────────────────
+// JSON's grammar is small and so is its vocabulary of refusals: nearly
+// everything wrong is a byte where no value, separator or closer can
+// begin, and that is `UNEXPECTED`. The two that are worth a sentence of
+// their own are named here; the rest are written where they are raised.
 
-const MESSAGES = {
-  UnexpectedToken: "unexpected token here; check for a missing comma, colon, key, or closing bracket/brace",
-  UnexpectedEndOfInput: "the document ended before this value/token was complete",
-  UnclosedString: "unclosed string; a JSON string cannot span multiple lines — add the closing quote, or escape the newline as `\\n`",
-  LeadingZero: "a number cannot have a leading zero; write the digits without the padding, or quote it as a string to keep the padding (e.g. a zip code)",
-};
+const UNEXPECTED = "unexpected token here; check for a missing comma, colon, key, or closing bracket/brace";
+const UNCLOSED_STRING =
+  "unclosed string; a JSON string cannot span multiple lines — add the closing quote, or escape the newline as `\\n`";
 
 // ── scalars ───────────────────────────────────────────────────────────────
 
@@ -64,7 +63,7 @@ function stringValue(sc) {
   let i = s + 1;
   let from = i; // where the pending run of plain bytes begins
   for (;;) {
-    if (i >= n) sc.fail(MESSAGES.UnclosedString, n);
+    if (i >= n) sc.fail(UNCLOSED_STRING, n);
     const c = bin.charCodeAt(i);
     if (c === 34) {
       parts.push(sc.slice(from, i));
@@ -78,36 +77,34 @@ function stringValue(sc) {
         if (!HEX4.test(hex)) {
           const bad = hex.search(/[^0-9a-fA-F]/);
           const at = i + 2 + (bad < 0 ? hex.length : bad);
-          if (at >= n) sc.fail(MESSAGES.UnclosedString, n);
-          sc.fail(MESSAGES.UnexpectedToken, at);
+          if (at >= n) sc.fail(UNCLOSED_STRING, n);
+          sc.fail(UNEXPECTED, at);
         }
         const cp = parseInt(hex, 16);
-        if (cp >= 0xd800 && cp <= 0xdbff && bin.slice(i + 6, i + 8) === "\\u") {
-          const lo = bin.slice(i + 8, i + 12);
-          const lcp = HEX4.test(lo) ? parseInt(lo, 16) : -1;
-          if (lcp >= 0xdc00 && lcp <= 0xdfff) {
-            parts.push(String.fromCodePoint(0x10000 + ((cp - 0xd800) << 10) + (lcp - 0xdc00)));
-            i += 12;
-            from = i;
-            continue;
-          }
+        const lo = bin.slice(i + 6, i + 8) === "\\u" ? bin.slice(i + 8, i + 12) : "";
+        const pair = HEX4.test(lo) ? fig.surrogatePair(cp, parseInt(lo, 16)) : null;
+        if (pair !== null) {
+          parts.push(String.fromCodePoint(pair));
+          i += 12;
+          from = i;
+          continue;
         }
-        // Unpaired: the compiled parser gives up decoding and keeps the
-        // whole string as written.
-        if (cp >= 0xd800 && cp <= 0xdfff) raw = true;
+        // Unpaired: the string is kept as written, every escape in it
+        // undecoded, which is what a reader of the source sees.
+        if (fig.isSurrogate(cp)) raw = true;
         else parts.push(String.fromCodePoint(cp));
         i += 6;
       } else if (e !== undefined && Object.hasOwn(SIMPLE_ESCAPES, e)) {
         parts.push(SIMPLE_ESCAPES[e]);
         i += 2;
       } else if (e === undefined) {
-        sc.fail(MESSAGES.UnclosedString, n);
+        sc.fail(UNCLOSED_STRING, n);
       } else {
-        sc.fail(MESSAGES.UnexpectedToken, i + 1);
+        sc.fail(UNEXPECTED, i + 1);
       }
       from = i;
     } else if (c < 32) {
-      sc.fail(MESSAGES.UnexpectedToken, i);
+      sc.fail(UNEXPECTED, i);
     } else {
       i += 1;
     }
@@ -119,8 +116,8 @@ function stringValue(sc) {
 const isDigit = (c) => c !== undefined && c >= 48 && c <= 57;
 
 function unexpected(sc) {
-  if (sc.eof()) sc.fail(MESSAGES.UnexpectedEndOfInput);
-  sc.fail(MESSAGES.UnexpectedToken);
+  if (sc.eof()) sc.fail("the document ended before this value was complete");
+  sc.fail(UNEXPECTED);
 }
 
 // A number: the lexeme verbatim, its kind by whether it has a fraction or
@@ -136,7 +133,7 @@ function number(sc) {
   }
   if (c === 48) {
     sc.advance();
-    if (isDigit(sc.byte())) sc.fail(MESSAGES.LeadingZero);
+    if (isDigit(sc.byte())) sc.fail("a number cannot have a leading zero; write the digits without the padding, or quote it as a string to keep the padding (e.g. a zip code)");
   } else {
     sc.match(/[0-9]+/);
   }
@@ -166,7 +163,7 @@ function literal(sc) {
   const word = sc.slice(m[0], m[1]);
   if (word === "null") return fig.scalar("null", [s, m[1]], undefined);
   if (word === "true" || word === "false") return fig.scalar("bool", [s, m[1]], word);
-  sc.fail(MESSAGES.UnexpectedToken, s);
+  sc.fail(UNEXPECTED, s);
 }
 
 // ── containers ────────────────────────────────────────────────────────────
@@ -184,7 +181,7 @@ function separator(close) {
     trivia(sc, ctx);
     if (sc.lit(",")) {
       trivia(sc, ctx);
-      if (close(sc)) sc.fail(MESSAGES.UnexpectedToken, sc.pos - 1);
+      if (close(sc)) sc.fail(UNEXPECTED, sc.pos - 1);
       return;
     }
     const p = sc.pos;
@@ -193,7 +190,7 @@ function separator(close) {
       return;
     }
     if (sc.eof()) return;
-    sc.fail(MESSAGES.UnexpectedToken);
+    sc.fail(UNEXPECTED);
   };
 }
 
@@ -206,13 +203,13 @@ const mapping = G.map({
     between: G.ws,
     sep: G.lit(":"),
     value: (sc, ctx) => value(sc, ctx),
-    missingSep: MESSAGES.UnexpectedToken,
-    missingValue: MESSAGES.UnexpectedToken,
+    missingSep: UNEXPECTED,
+    missingValue: UNEXPECTED,
   }),
   after: separator(G.lit("}")),
   duplicates: "keep",
-  expected: MESSAGES.UnexpectedToken,
-  unclosed: MESSAGES.UnexpectedToken,
+  expected: UNEXPECTED,
+  unclosed: UNEXPECTED,
 });
 
 const sequence = G.sequence({
@@ -221,8 +218,8 @@ const sequence = G.sequence({
   trivia,
   item: (sc, ctx) => value(sc, ctx),
   after: separator(G.lit("]")),
-  expected: MESSAGES.UnexpectedToken,
-  unclosed: MESSAGES.UnexpectedToken,
+  expected: UNEXPECTED,
+  unclosed: UNEXPECTED,
 });
 
 value = G.choice([mapping, sequence, stringValue, number, literal]);
@@ -231,8 +228,8 @@ const parse = G.document({
   bom: true,
   root: value,
   trivia,
-  missing: MESSAGES.UnexpectedToken,
-  trailing: MESSAGES.UnexpectedToken,
+  missing: UNEXPECTED,
+  trailing: UNEXPECTED,
 });
 
 // ── the printer ───────────────────────────────────────────────────────────
@@ -254,54 +251,6 @@ function quote(s) {
   );
 }
 
-// Whether strict JSON reads `raw` back as the same number: a plain
-// decimal — no radix, no `_`, no `+`, no bare dot, no leading zero.
-function jsonSpellable(raw) {
-  const body = raw[0] === "-" ? raw.slice(1) : raw;
-  if (body === "" || raw[0] === "+" || body.includes("_")) return false;
-  if (/^0[xXoObB]/.test(body)) return false;
-  if (body[0] === "." || body[body.length - 1] === ".") return false;
-  const m = body.search(/[.eE]/);
-  const intEnd = m < 0 ? body.length : m;
-  if (intEnd > 1 && body[0] === "0") return false;
-  return true;
-}
-
-// `raw` as a decimal lexeme, as the compiled printer canonicalizes a
-// number another format spelled: radix converted, `_` and `+` dropped,
-// bare dots padded, leading zeros stripped.
-function canonicalNumber(raw) {
-  let out = "";
-  let s = raw;
-  if (s[0] === "-") {
-    out += "-";
-    s = s.slice(1);
-  } else if (s[0] === "+") {
-    s = s.slice(1);
-  }
-  const radix = /^0([xXoObB])/.exec(s);
-  if (radix) {
-    const base = { x: 16, o: 8, b: 2 }[radix[1].toLowerCase()];
-    const digits = s.slice(2).replace(/_/g, "");
-    const valid = { 16: /^[0-9a-fA-F]+$/, 8: /^[0-7]+$/, 2: /^[01]+$/ }[base];
-    if (!valid.test(digits)) return out + s;
-    let v = 0n;
-    for (const d of digits) v = v * BigInt(base) + BigInt(parseInt(d, base));
-    return out + v.toString();
-  }
-  const eIdx = s.search(/[eE]/);
-  const mantissa = eIdx < 0 ? s : s.slice(0, eIdx);
-  const exponent = eIdx < 0 ? "" : s.slice(eIdx);
-  const dot = mantissa.indexOf(".");
-  const intDigits = (dot < 0 ? mantissa : mantissa.slice(0, dot)).replace(/_/g, "").replace(/^0+/, "");
-  out += intDigits === "" ? "0" : intDigits;
-  if (dot >= 0) {
-    const frac = mantissa.slice(dot + 1).replace(/_/g, "");
-    out += "." + (frac === "" ? "0" : frac);
-  }
-  return out + exponent.replace(/_/g, "");
-}
-
 function writeNode(w, row, depth) {
   const k = row.kind;
   if (k === "null") {
@@ -310,9 +259,8 @@ function writeNode(w, row, depth) {
     w.put(row.text);
   } else if (k === "int" || k === "float") {
     // A number parsed here is its own lexeme; one from another format's
-    // tree (`0xff`, `1_000`) is written as JSON reads it.
-    const raw = row.text ?? "";
-    w.put(jsonSpellable(raw) ? raw : canonicalNumber(raw));
+    // tree (`0xff`, `1_000`) is canonicalized to the decimal JSON reads.
+    w.put(N.text(row.text ?? "", N.JSON));
   } else if (k === "string") {
     w.put(quote(row.text ?? ""));
   } else if (k === "sequence" || k === "mapping") {

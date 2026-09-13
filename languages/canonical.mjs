@@ -5,8 +5,8 @@
 // one-spelling encoding of every node kind fig has, the oracle two
 // documents are compared through — so this module touches every row the
 // wire can carry, which neither `dotenv.mjs` (flat) nor `plist.mjs` (XML)
-// does. What the compiled parser accepts is `src/canonical/parser.zig` in
-// fig, and this follows it:
+// does. The form, and the tree it makes — the contract this module is held
+// to, fixture by fixture, against the compiled `canonical`:
 //
 //   node   ::= ('&' name | '!' tag)* value
 //   value  ::= 'null' | 'true' | 'false'
@@ -20,8 +20,8 @@
 // A number's kind is implied by its lexeme (`0x…` is an int; a `.` or an
 // exponent makes a float) unless `~i`/`~f` pins it; the prefix is in the
 // span and not in the text. Repeated keys all stay. Comments are `//` to
-// the end of the line and `/* … */`; where each binds is the compiled
-// parser's rule, which is nearly the grammar module's and not quite:
+// the end of the line and `/* … */`; where each binds is the grammar
+// module's rule with `one` and `closingLine` set, which is to say:
 //
 //   * a `//` on the line a container opens is that container's trailing
 //     comment (a block comment there leads the first child);
@@ -100,7 +100,7 @@ function decode(raw, span) {
         fig.fail("invalid `\\u` escape in a string; expected four hex digits", span[0]);
       }
       const cp = parseInt(hex, 16);
-      if (cp >= 0xd800 && cp <= 0xdfff) {
+      if (fig.isSurrogate(cp)) {
         fig.fail("invalid `\\u` escape in a string; a surrogate is not a character", span[0]);
       }
       out += String.fromCodePoint(cp);
@@ -308,34 +308,17 @@ node = (sc, ctx) => {
   return v;
 };
 
-// What a comment met in trivia binds to. The module's rule — on the line of
-// the last node completed, its trailing; otherwise waiting — with the
-// compiled parser's two refinements: a container that spans lines takes the
-// comment on its closing line as dangling, and a node takes one trailing
-// comment, a second on the same line waiting like any other.
-function bind(ctx, c) {
-  const last = ctx.last;
-  if (last && ctx.sc.sameLine(last.span[1], c[0])) {
-    if (isContainer(last) && !ctx.sc.sameLine(last.span[0], last.span[1])) {
-      last.comment("dangling", c.text, c.style);
-    } else {
-      last.comment("trailing", c.text, c.style);
-    }
-    ctx.last = null;
-    return;
-  }
-  ctx.pending.push(c);
-  ctx.last = null;
-}
-
 // The document, by hand rather than `G.document`: the root's comments bind
 // by rules of their own (see the top), and the binding policy is the
 // context's, so this is where a module states one.
 function parse(_dialect, input) {
   const sc = fig.scanner(input);
-  const ctx = G.context(sc);
+  // The binding rule is the context's own, refined twice: `closingLine` —
+  // a container that spans lines takes the comment on its closing line as
+  // dangling, not trailing; `one` — a node takes one trailing comment, a
+  // second on the same line waiting like any other.
+  const ctx = G.context(sc, { one: true, closingLine: true });
   ctx.heads = [];
-  ctx.comment = (c) => bind(ctx, c);
   trivia(sc, ctx);
   const root = node(sc, ctx);
   if (root == null) {

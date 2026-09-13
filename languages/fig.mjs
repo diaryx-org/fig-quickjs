@@ -2,12 +2,12 @@
 // compiled `fig` format, `.figl` — row for row, region for region, mention
 // for mention, marker for marker.
 //
-// `fig lang check js-fig --against fig <files…>` holds this module to the
-// compiled parser's node table on every file given, and this module is
-// written against `fig lang table -i fig`, which prints that table. What
-// the compiled format accepts is stated in fig's `src/languages/fig/`
-// (`DESIGN.md`, `tokenizer.zig`, `parser.zig`, `printer.zig`), and this
-// follows the parser and the printer function for function.
+// The contract is the format and the tree it makes: for every document the
+// compiled `fig` reads, this module builds the same node table and prints
+// the same bytes. `fig lang table -i fig` prints that table, and `fig lang
+// check js-fig --against fig <files…>` holds this module to it on any
+// file; where the format is written down is fig's `src/languages/fig/`
+// (`DESIGN.md`, `tokenizer.zig`, `parser.zig`, `printer.zig`).
 //
 // The shape, as the compiled parser builds it:
 //
@@ -38,9 +38,11 @@
 //     the value; what waits at the end dangles on the root; comments
 //     inside a flow value are discarded.
 //
-// The refusals are the compiled parser's, in its words and at its offsets.
-// What is not carried: the authoring-time warnings (a leading zero kept as
-// text, an indent that disagrees with its markers), which have no row.
+// This module refuses every document the compiled format refuses, in words
+// and at offsets of its own — the message is written for whoever is holding
+// the file, not copied. What is not carried: the authoring-time warnings (a
+// leading zero kept as text, an indent that disagrees with its markers),
+// which have no row.
 //
 // What fig shares with the other section formats — the region a header
 // line is, the mention a name is, the comments waiting for a key, by
@@ -53,8 +55,9 @@
 // `registerLanguage` takes, so it serves the browser and Node unchanged.
 import * as fig from "fig";
 import * as G from "fig/grammar";
+import * as DT from "fig/datetime";
 
-// ── errors, as the compiled parser words them ─────────────────────────────
+// ── refusals ──────────────────────────────────────────────────────────────
 
 const E = {
   FigForeignSyntaxColon: "`:` introduces a type, not a value; write `key = value`, or `key: type = value`",
@@ -156,61 +159,10 @@ function sniffNumber(token) {
   return isFloat ? "float" : "int";
 }
 
-// RFC 3339, as fig's shared `util.datetime` classifies it.
-const two = (s, at) => parseInt(s.slice(at, at + 2), 10);
-const bothDigits = (s, at) => at + 1 < s.length && isDigit(s.charCodeAt(at)) && isDigit(s.charCodeAt(at + 1));
-function daysInMonth(year, month) {
-  if (month === 2) return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28;
-  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
-  return 31;
-}
-function validDate(s) {
-  if (s.length !== 10 || s[4] !== "-" || s[7] !== "-") return false;
-  if (!(bothDigits(s, 0) && bothDigits(s, 2) && bothDigits(s, 5) && bothDigits(s, 8))) return false;
-  const year = two(s, 0) * 100 + two(s, 2);
-  const month = two(s, 5);
-  const day = two(s, 8);
-  if (month < 1 || month > 12) return false;
-  return day >= 1 && day <= daysInMonth(year, month);
-}
-function validTime(s) {
-  if (s.length < 5 || s[2] !== ":") return false;
-  if (!(bothDigits(s, 0) && bothDigits(s, 3))) return false;
-  if (two(s, 0) > 23 || two(s, 3) > 59) return false;
-  if (s.length === 5) return true;
-  if (s[5] !== ":" || s.length < 8) return false;
-  if (!bothDigits(s, 6) || two(s, 6) > 60) return false;
-  if (s.length === 8) return true;
-  if (s[8] !== "." || s.length < 10) return false;
-  return /^[0-9]+$/.test(s.slice(9));
-}
-function validOffset(s) {
-  if (s.length !== 6 || s[3] !== ":") return false;
-  if (!(bothDigits(s, 1) && bothDigits(s, 4))) return false;
-  return two(s, 1) <= 23 && two(s, 4) <= 59;
-}
-function classifyDatetime(raw) {
-  if (raw.length >= 3 && raw[2] === ":") return validTime(raw) ? "local_time" : null;
-  if (raw.length < 10) return null;
-  if (!validDate(raw.slice(0, 10))) return null;
-  if (raw.length === 10) return "local_date";
-  const sep = raw[10];
-  if (sep !== "T" && sep !== "t" && sep !== " ") return null;
-  const rest = raw.slice(11);
-  let timeStr = rest;
-  let hasOffset = false;
-  const last = rest[rest.length - 1];
-  if (last === "Z" || last === "z") {
-    timeStr = rest.slice(0, -1);
-    hasOffset = true;
-  } else if (rest.length >= 6 && (rest[rest.length - 6] === "+" || rest[rest.length - 6] === "-") && rest[rest.length - 3] === ":") {
-    if (!validOffset(rest.slice(-6))) return null;
-    timeStr = rest.slice(0, -6);
-    hasOffset = true;
-  }
-  if (!validTime(timeStr)) return null;
-  return hasOffset ? "offset_datetime" : "local_datetime";
-}
+// RFC 3339, through the shared `fig/datetime`: fig takes a bare time with
+// no date, and a time to the minute with no seconds, so both options are
+// on.
+const DATETIME = { minutePrecision: true, timeOnly: true };
 
 // Literal-else-string over a trimmed bare token (as text).
 function sniffBare(token) {
@@ -219,7 +171,7 @@ function sniffBare(token) {
   if (token === "true" || token === "false") return { kind: "bool", text: token };
   const n = sniffNumber(token);
   if (n) return { kind: n, text: token };
-  const d = classifyDatetime(token);
+  const d = DT.classify(token, DATETIME);
   if (d) return { kind: "string", text: token, extKind: d };
   return { kind: "string", text: token };
 }
@@ -355,8 +307,6 @@ const trimSpan = (bin, s, e) => {
   return [s, e];
 };
 
-const trimComment = (s) => s.replace(/^[ \t\r]+|[ \t\r]+$/g, "");
-
 // One `\…` escape at `i` in bin string `s`; the decoded text and the index
 // past it. `at` is where a bad one is reported.
 function decodeEscape(s, i, at) {
@@ -373,7 +323,7 @@ function decodeEscape(s, i, at) {
     const hex = s.slice(i + 2, i + 6);
     if (!/^[0-9a-fA-F]{4}$/.test(hex)) fail(E.FigBadEscape, at);
     const cp = parseInt(hex, 16);
-    if (cp >= 0xd800 && cp <= 0xdfff) fail(E.FigBadEscape, at);
+    if (fig.isSurrogate(cp)) fail(E.FigBadEscape, at);
     return [String.fromCodePoint(cp), i + 6];
   }
   fail(E.FigBadEscape, at);
@@ -405,7 +355,7 @@ function parseCharLiteral(text) {
     const m = inner.match(/^\\u\{([0-9a-fA-F]+)\}$/);
     if (!m || m[1].length > 6) return null;
     const cp = parseInt(m[1], 16);
-    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    if (cp > 0x10ffff || fig.isSurrogate(cp)) return null;
     return cp;
   }
   return null;
@@ -549,7 +499,7 @@ class Parser {
         const cstart = i + 1;
         let j = cstart;
         while (j < this.n && this.at(j) !== 10) j += 1;
-        openerComment = trimComment(this.text(cstart, j));
+        openerComment = fig.trimComment(this.text(cstart, j));
         i = j;
         break;
       }
@@ -832,7 +782,7 @@ class Parser {
     if (commentStart !== null) {
       let j = commentStart + 1;
       while (j < this.n && this.at(j) !== 10) j += 1;
-      comment = trimComment(this.text(commentStart + 1, j));
+      comment = fig.trimComment(this.text(commentStart + 1, j));
       lineEnd = j;
     }
     this.pos = lineEnd;
@@ -846,7 +796,7 @@ class Parser {
       const cs = this.pos + 1;
       let j = cs;
       while (j < this.n && this.at(j) !== 10) j += 1;
-      const c = trimComment(this.text(cs, j));
+      const c = fig.trimComment(this.text(cs, j));
       this.pos = j;
       return c;
     }
@@ -859,7 +809,7 @@ class Parser {
     if (i >= this.n || this.at(i) !== 35) return null;
     let j = i + 1;
     while (j < this.n && this.at(j) !== 10) j += 1;
-    return trimComment(this.text(i + 1, j));
+    return fig.trimComment(this.text(i + 1, j));
   }
 
   applyKnownType(typeName, text, span) {
@@ -886,7 +836,7 @@ class Parser {
       case "datetime":
       case "date":
       case "time": {
-        const k = classifyDatetime(text);
+        const k = DT.classify(text, DATETIME);
         if (!k) return null;
         if (typeName === "date" && k !== "local_date") return null;
         if (typeName === "time" && k !== "local_time") return null;
@@ -1326,7 +1276,7 @@ class Parser {
       this.advance();
       let j = this.pos;
       while (j < this.n && this.at(j) !== 10) j += 1;
-      this.sections.comment(trimComment(this.text(this.pos, j)), depth);
+      this.sections.comment(fig.trimComment(this.text(this.pos, j)), depth);
       this.pos = j;
       this.skipToNextLine();
       return;
@@ -1534,7 +1484,6 @@ function charLiteral(text) {
 }
 
 const isMultiline = (row) => row.kind === "string" && typeof row.text === "string" && row.text.includes("\n");
-const DATETIMES = new Set(["offset_datetime", "local_datetime", "local_date", "local_time"]);
 
 class Printer {
   constructor(options) {
@@ -1607,7 +1556,7 @@ class Printer {
     if (k === "int" || k === "float") return row.ext_kind ? null : blen(row.text);
     if (k === "string") {
       const e = row.ext_kind;
-      if (e) return DATETIMES.has(e) ? blen(row.text) : null;
+      if (e) return DT.KINDS.has(e) ? blen(row.text) : null;
       if (typeof row.text === "string" && row.text.includes("\n")) return null;
       return scalarStringWidth(row.text ?? "", false, true);
     }
