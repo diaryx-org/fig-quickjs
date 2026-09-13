@@ -44,10 +44,15 @@ elsewhere:
 - toml.mjs, the twin of fig's compiled toml format ([`88d27a1`](https://github.com/diaryx-org/fig-quickjs/commit/88d27a166744c3f52152cbed490a479f134b5661))
 - ini.mjs, the twin of fig's compiled ini format ([`d27a961`](https://github.com/diaryx-org/fig-quickjs/commit/d27a961a7dfcb44d79d72fc2e109663ffaf6b45c))
 - fig.mjs, the twin of fig's own authoring dialect ([`18d5235`](https://github.com/diaryx-org/fig-quickjs/commit/18d523504ea85c428815ba8fddee0b2eb806687a))
+- **grammar** — `G.sections`, what a format of header lines records alike ([`2bf1950`](https://github.com/diaryx-org/fig-quickjs/commit/2bf1950c90b198361048a8378b25498f0b0edea5))
 
 ### Fixed
 
 - **engine** — give QuickJS a 16 MB stack, on a thread with twice that ([`e7d331b`](https://github.com/diaryx-org/fig-quickjs/commit/e7d331b2e6b05c4f8f5504b885da39b7cbb13200))
+
+### Changed
+
+- **languages** — rebase ini, toml and fig on `G.sections` ([`f42e12f`](https://github.com/diaryx-org/fig-quickjs/commit/f42e12fb30476bf01f101f463a483a57ef8f0b2c))
 
 ### Uncategorised — triage before release
 
