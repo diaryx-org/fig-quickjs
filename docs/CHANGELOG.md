@@ -49,6 +49,8 @@ elsewhere:
 - **languages** — zon.mjs, the twin of fig's compiled ZON ([`95022c9`](https://github.com/diaryx-org/fig-quickjs/commit/95022c94d8d721f80a39f3dd1bff3d35dfeb4d77))
 - **languages** — json5.mjs, the twins of fig's compiled JSONC and JSON5 dialects ([`a4bec92`](https://github.com/diaryx-org/fig-quickjs/commit/a4bec92c9ee0b8e81476859984945fb7da828cc1))
 - **languages** — nestedtext.mjs, the twin of fig's compiled NestedText ([`666b271`](https://github.com/diaryx-org/fig-quickjs/commit/666b271e66e40e9677a93cb45a1bc57ec80139f8))
+- **fig** — a table records its tag directives ([`7f8832f`](https://github.com/diaryx-org/fig-quickjs/commit/7f8832fa37c3885ff4cd1f0f76e3abe75e1d26d4))
+- **languages** — yaml.mjs, the twin of fig's compiled YAML ([`8cacfb7`](https://github.com/diaryx-org/fig-quickjs/commit/8cacfb7a34ab7207bcbd026b8315daac37833484))
 
 ### Fixed
 
