@@ -1,17 +1,22 @@
-// YAML, in JavaScript: the twin of fig's compiled `yaml` format, row for
-// row, marker for marker, anchor for anchor.
+// YAML, in JavaScript: the twin of fig's compiled `yaml` format — YAML
+// 1.2 with the 1.1 tag repository as a second dialect.
 //
-// `fig lang check js-yaml --against yaml <files…>` holds this module to
-// the compiled parser's node table on every file given, and this module
-// is written against `fig lang table -i yaml`, which prints that table.
-// What the compiled format accepts is stated in fig's
-// `src/languages/yaml/` (`tokenizer.zig`, `parser.zig`, `printer.zig`,
-// `editor_helper.zig`), and this follows them function for function —
-// the tokenizer's line-by-line indentation structure, the parser's
-// container stack and its comment layer, the printer's block style with
-// a flow form where a collection fits the width.
+// The contract is the format and the table, not the compiled parser's
+// code: `fig lang table -i yaml` prints the node table a document makes,
+// and this module is held to it row for row — kinds, text, spans,
+// anchors, tags, markers, separators, comments with their slot and
+// style, and the `%TAG` directives. `fig lang check js-yaml --against
+// yaml <files…>` is that check on any file. The printer is held to the
+// compiled printer's bytes: block style, a flow form where a collection
+// fits the width.
 //
-// The shape, as the compiled parser builds it:
+// What the format is — the indentation structure, the flow collections,
+// the block scalars with their indicators, anchors, tags, directives —
+// is stated here in full, because that is the format. What is not the
+// format is not: this refuses every document the compiled format
+// refuses, but in its own words and at its own offsets.
+//
+// The shape of the table:
 //
 //   * a block mapping spans its first key through its last value; a
 //     block sequence its first `-` (recorded as each item's `marker`)
@@ -36,18 +41,13 @@
 //     be used by a tag; a `%YAML` directive is checked and dropped; a
 //     second document is refused.
 //
-// The refusals are the compiled parser's, by name and — as the compiled
-// parser reports none — without a position: `UnexpectedToken`,
-// `InvalidIndent`, `TabIndent`, `UnclosedString`, `MultipleDocuments`,
-// `DuplicateProperty`, `UndefinedAlias`, `InvalidDirective`,
-// `UndefinedTagHandle`, `InvalidTag`, `InvalidAnchor`, `InvalidAlias`,
-// `InvalidBlockHeader`, `InvalidUnicodeEscape`.
-//
 // Every offset is a byte offset: the tokenizer and the parser walk the
 // scanner's one-char-per-byte shadow of the input (`sc.bin`), decode in
 // that space, and turn a decoded string into text only as it becomes a
 // row's `text`.
 import * as fig from "fig";
+import * as DT from "fig/datetime";
+import * as N from "fig/number";
 
 const SP = 32, TAB = 9, NL = 10, CR = 13;
 const HASH = 35, COLON = 58, DASH = 45, QUEST = 63, COMMA = 44;
@@ -57,18 +57,17 @@ const BSLASH = 92, LT = 60, PLUS = 43, USCORE = 95;
 
 const at = (s, i) => s.charCodeAt(i);
 const isBlank = (c) => c === SP || c === TAB;
-const isDigit = (c) => c >= 48 && c <= 57;
-const isHex = (c) => isDigit(c) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
-const isOctal = (c) => c >= 48 && c <= 55;
-const isBinary = (c) => c === 48 || c === 49;
 const isFlowIndicator = (c) => c === COMMA || c === LBRACK || c === RBRACK || c === LBRACE || c === RBRACE;
 
-const fail = (name) => fig.fail(name);
+// Refuse the document, in this module's own words — at an offset when
+// one is at hand.
+const fail = fig.fail;
 
 // ── the tokenizer ─────────────────────────────────────────────────────────
-// `tokenizer.zig`, line by line. Every token is `{kind, s, e}` over
-// 0-based offsets; an `indent`/`dedent`/`newline` is structural, the rest
-// is content, and `block_scalar` is the raw body of a block scalar.
+// YAML is read a line at a time, because its structure is indentation.
+// Every token is `{kind, s, e}` over 0-based offsets; an
+// `indent`/`dedent`/`newline` is structural, the rest is content, and
+// `block_scalar` is the raw body of a block scalar.
 
 // The exclusive end of a line's content given the position of its `\n`
 // (or the source's end): a trailing `\r` is trimmed.
@@ -198,17 +197,23 @@ class Tokenizer {
     this.tokens.push({ kind, s, e });
   }
 
+  // The line at `pos`: where its content begins (past the leading
+  // spaces), where it ends (before its `\r\n` or `\n`), and where the
+  // next line begins.
+  lineAt(pos) {
+    const src = this.src;
+    const nl = src.indexOf("\n", pos);
+    const e = trimCr(src, pos, nl === -1 ? this.n : nl);
+    let contentStart = pos;
+    while (contentStart < e && at(src, contentStart) === SP) contentStart += 1;
+    return { start: pos, contentStart, e, newlineEnd: nl === -1 ? this.n : nl + 1 };
+  }
+
   getLine() {
     if (this.i >= this.n) return null;
-    const src = this.src;
-    const start = this.i;
-    const nl = src.indexOf("\n", start);
-    const rawEnd = nl === -1 ? this.n : nl;
-    this.i = nl === -1 ? this.n : nl + 1;
-    const e = trimCr(src, start, rawEnd);
-    let contentStart = start;
-    while (contentStart < e && at(src, contentStart) === SP) contentStart += 1;
-    return { start, contentStart, e, newlineEnd: this.i };
+    const line = this.lineAt(this.i);
+    this.i = line.newlineEnd;
+    return line;
   }
 
   lineAllWs(line) {
@@ -280,12 +285,11 @@ class Tokenizer {
     return se < line.e && at(src, se) === COLON;
   }
 
+  // What is left of the line `pos` falls in, as a line of its own.
   remainderLine(pos) {
-    const src = this.src;
-    const nl = src.indexOf("\n", pos);
-    const nl0 = nl === -1 ? this.n : nl;
-    const newlineEnd = nl === -1 ? this.n : nl + 1;
-    return { start: pos, contentStart: pos, e: trimCr(src, pos, nl0), newlineEnd };
+    const line = this.lineAt(pos);
+    line.contentStart = pos;
+    return line;
   }
 
   columnOf(pos) {
@@ -397,13 +401,8 @@ class Tokenizer {
     let probe = line.newlineEnd;
     let result = null;
     while (probe < n) {
-      const lineStart = probe;
-      const nl = src.indexOf("\n", lineStart);
-      const nl0 = nl === -1 ? n : nl;
-      const newlineEnd = nl === -1 ? n : nl + 1;
-      const e = trimCr(src, lineStart, nl0);
-      let spaces = lineStart;
-      while (spaces < e && at(src, spaces) === SP) spaces += 1;
+      const ln = this.lineAt(probe);
+      const { start: lineStart, contentStart: spaces, e, newlineEnd } = ln;
       let ws = lineStart;
       while (ws < e && isBlank(at(src, ws))) ws += 1;
       if (ws === e) {
@@ -417,17 +416,11 @@ class Tokenizer {
       const se = scalarEnd(src, ws, e, false);
       if (se !== e) {
         if (at(src, se) === HASH) {
-          result = {
-            contentEnd: trimRightSpaces(src, ws, se),
-            lastLine: { start: lineStart, contentStart: spaces, e, newlineEnd },
-          };
+          result = { contentEnd: trimRightSpaces(src, ws, se), lastLine: ln };
         }
         break;
       }
-      result = {
-        contentEnd: trimRightSpaces(src, ws, e),
-        lastLine: { start: lineStart, contentStart: spaces, e, newlineEnd },
-      };
+      result = { contentEnd: trimRightSpaces(src, ws, e), lastLine: ln };
       probe = newlineEnd;
     }
     if (result) this.i = result.lastLine.newlineEnd;
@@ -474,14 +467,14 @@ class Tokenizer {
       const c = at(src, i);
       if (c === NL) {
         const lineStart = i + 1;
-        if (this.docMarkerAt(lineStart)) fail("UnclosedString");
+        if (this.docMarkerAt(lineStart)) fail("this quoted string is never closed; a document marker line ends it", start);
         let spaces = lineStart;
         while (spaces < n && at(src, spaces) === SP) spaces += 1;
         let ws = lineStart;
         while (ws < n && isBlank(at(src, ws))) ws += 1;
         const wc = at(src, ws);
         const blank = ws >= n || wc === NL || wc === CR;
-        if (!blank && floor !== null && spaces - lineStart <= floor) fail("InvalidIndent");
+        if (!blank && floor !== null && spaces - lineStart <= floor) fail("a quoted string continued on the next line must stay indented past its block", spaces);
         i += 1;
       } else if (double) {
         if (c === BSLASH) {
@@ -499,7 +492,7 @@ class Tokenizer {
         i += 1;
       }
     }
-    fail("UnclosedString");
+    fail("this quoted string is never closed", start);
   }
 
   flushPendingBlock() {
@@ -518,13 +511,7 @@ class Tokenizer {
     let minBlankTab = null;
     let lastEnd = bodyStart;
     while (this.i < n) {
-      const lineStart = this.i;
-      const nl = src.indexOf("\n", lineStart);
-      const nl0 = nl === -1 ? n : nl;
-      const newlineEnd = nl === -1 ? n : nl + 1;
-      const e = trimCr(src, lineStart, nl0);
-      let spaces = lineStart;
-      while (spaces < e && at(src, spaces) === SP) spaces += 1;
+      const { start: lineStart, contentStart: spaces, e, newlineEnd } = this.lineAt(this.i);
       let ws = lineStart;
       while (ws < e && isBlank(at(src, ws))) ws += 1;
       const blank = ws === e;
@@ -532,7 +519,7 @@ class Tokenizer {
       if (blank) {
         if (contentIndent === null) {
           if (ws > spaces && (info.root || indent > info.headerIndent)) {
-            if (maxLeadingBlank > indent) fail("InvalidIndent");
+            if (maxLeadingBlank > indent) fail("a blank line in this block scalar is indented past its first content line", lineStart);
             contentIndent = indent;
           } else {
             if (ws > spaces) {
@@ -548,15 +535,15 @@ class Tokenizer {
           if (indent < contentIndent) break;
         } else {
           if (!info.root && indent <= info.headerIndent) break;
-          if (maxLeadingBlank > indent) fail("InvalidIndent");
-          if (minBlankTab !== null && minBlankTab < indent) fail("TabIndent");
+          if (maxLeadingBlank > indent) fail("a blank line in this block scalar is indented past its first content line", lineStart);
+          if (minBlankTab !== null && minBlankTab < indent) fail("a tab indents this block scalar; YAML indentation is spaces", lineStart);
           contentIndent = indent;
         }
       }
       this.i = newlineEnd;
       lastEnd = newlineEnd;
     }
-    if (contentIndent === null && minBlankTab !== null) fail("TabIndent");
+    if (contentIndent === null && minBlankTab !== null) fail("a tab indents this block scalar; YAML indentation is spaces", bodyStart);
     if (lastEnd > bodyStart) this.add("block_scalar", bodyStart, lastEnd);
   }
 
@@ -567,6 +554,11 @@ class Tokenizer {
     let atContentStart = true;
     let blockOwnerIndent = line.contentStart - line.start;
     let nodeStart = line.contentStart;
+    // Whatever is not an indicator here is the start of a plain scalar.
+    const plain = () => {
+      [line, cursor] = this.handlePlain(cursor, line);
+      atContentStart = false;
+    };
 
     while (cursor < line.e) {
       const c = at(src, cursor);
@@ -582,18 +574,14 @@ class Tokenizer {
           this.add("comment", cursor, line.e);
           return;
         }
-        [line, cursor] = this.handlePlain(cursor, line);
-        atContentStart = false;
+        plain();
       } else if (c === COLON) {
         if (colonIsIndicator(src, cursor, line.e, flow) || this.jsonKeyColon()) {
           if (!flow && nodeStart >= line.start) blockOwnerIndent = nodeStart - line.start;
           this.add("colon", cursor, cursor + 1);
           cursor += 1;
           atContentStart = true;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === LBRACK || c === LBRACE) {
         if (this.flowDepth === 0) this.openFlow(line);
         this.add(c === LBRACK ? "flow_seq_start" : "flow_map_start", cursor, cursor + 1);
@@ -610,10 +598,7 @@ class Tokenizer {
           this.add("comma", cursor, cursor + 1);
           cursor += 1;
           atContentStart = false;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === SQ || c === DQ) {
         const floor = this.precededOnlyByTrivia() || cursor === line.contentStart ? null : line.contentStart - line.start;
         const e = this.multilineQuotedEnd(cursor, floor);
@@ -647,67 +632,50 @@ class Tokenizer {
             this.pendingBlock = { headerIndent: owner, explicitIndent: explicitIndent(src, cursor, hdrEnd), root };
             return;
           }
-          fail("InvalidBlockHeader");
+          fail("a `|` or `>` header takes one indentation digit, one `+` or `-`, then a comment", cursor);
         }
-        [line, cursor] = this.handlePlain(cursor, line);
-        atContentStart = false;
+        plain();
       } else if (c === DASH) {
         if (!flow && atContentStart && followedByBlank(src, cursor, line.e)) {
-          if (cursor > line.contentStart && at(src, cursor - 1) === TAB) fail("TabIndent");
+          if (cursor > line.contentStart && at(src, cursor - 1) === TAB) fail("a tab indents this `-` item; YAML indentation is spaces", cursor);
           blockOwnerIndent = cursor - line.start;
           this.add("dash", cursor, cursor + 1);
           cursor += 1;
           atContentStart = true;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === QUEST) {
         if ((flow || atContentStart) && followedByBlank(src, cursor, line.e)) {
           this.add("explicit_key", cursor, cursor + 1);
           cursor += 1;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === BANG) {
         if (flow || atContentStart) {
           const e = tagEnd(src, cursor, line.e);
           if (e !== null) {
-            if (!tagSeparated(src, e, line.e, flow)) fail("InvalidTag");
+            if (!tagSeparated(src, e, line.e, flow)) fail("a tag must be followed by a space, a newline, or a flow indicator", e);
             this.add("tag", cursor, e);
             cursor = e;
           } else {
-            fail("InvalidTag");
+            fail("this is not a tag: a `!<...>` tag needs a name and a closing `>`", cursor);
           }
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === AMP) {
         if (flow || atContentStart) {
           const e = anchorNameEnd(src, cursor + 1, line.e);
-          if (e === cursor + 1 || !tagSeparated(src, e, line.e, flow)) fail("InvalidAnchor");
+          if (e === cursor + 1 || !tagSeparated(src, e, line.e, flow)) fail("an `&` anchor needs a name, then a space", cursor);
           this.add("anchor", cursor, e);
           cursor = e;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else if (c === STAR) {
         if (flow || atContentStart) {
           const e = anchorNameEnd(src, cursor + 1, line.e);
-          if (e === cursor + 1 || !tagSeparated(src, e, line.e, flow)) fail("InvalidAlias");
+          if (e === cursor + 1 || !tagSeparated(src, e, line.e, flow)) fail("a `*` alias needs a name, then a space", cursor);
           this.add("alias", cursor, e);
           cursor = e;
           atContentStart = false;
-        } else {
-          [line, cursor] = this.handlePlain(cursor, line);
-          atContentStart = false;
-        }
+        } else plain();
       } else {
-        [line, cursor] = this.handlePlain(cursor, line);
-        atContentStart = false;
+        plain();
       }
     }
 
@@ -738,7 +706,7 @@ class Tokenizer {
         }
         const indent = line.contentStart - line.start;
         const first = at(src, line.contentStart);
-        if (!this.flowRoot && first !== RBRACK && first !== RBRACE && indent <= this.flowOpenIndent) fail("InvalidIndent");
+        if (!this.flowRoot && first !== RBRACK && first !== RBRACE && indent <= this.flowOpenIndent) fail("a line inside a flow collection must be indented past the line that opened it", line.contentStart);
         this.tokenizeLineContent(line);
         if (this.i === line.newlineEnd && line.newlineEnd > line.e) this.add("newline", line.e, line.newlineEnd);
         continue;
@@ -771,7 +739,7 @@ class Tokenizer {
           indentStack.push({ indent, propOnly, seqContent: null });
           currentIndent = indent;
         }
-        if (indent !== currentIndent) fail("InvalidIndent");
+        if (indent !== currentIndent) fail("this line's indentation matches no block open above it", line.contentStart);
       }
 
       if (at(src, line.contentStart) === DASH && followedByBlank(src, line.contentStart, line.e)) {
@@ -804,7 +772,7 @@ class Tokenizer {
         continue;
       }
 
-      if (this.tabIndentedStructure(line)) fail("TabIndent");
+      if (this.tabIndentedStructure(line)) fail("a tab indents this line; YAML indentation is spaces", line.contentStart);
 
       this.tokenizeLineContent(line);
       if (this.i === line.newlineEnd) {
@@ -823,9 +791,9 @@ class Tokenizer {
 }
 
 // ── scalars ───────────────────────────────────────────────────────────────
-// Decoding and resolution, as `parser.zig` does them, over the byte
-// shadow: the folds and escapes of quoted strings, the chomping of block
-// scalars, and the plain-scalar schema of each dialect.
+// Decoding and resolution, over the byte shadow: the folds and escapes
+// of quoted strings, the chomping of block scalars, and the plain-scalar
+// schema of each dialect.
 
 const eqlAny = (s, list) => list.includes(s);
 
@@ -871,7 +839,7 @@ function foldPlainScalar(source) {
 }
 
 function singleQuoted(source) {
-  if (source.length < 2 || at(source, 0) !== SQ || at(source, source.length - 1) !== SQ) fail("UnclosedString");
+  if (source.length < 2 || at(source, 0) !== SQ || at(source, source.length - 1) !== SQ) fail("this single-quoted string is never closed");
   const inner = source.slice(1, -1);
   if (!inner.includes("'") && !inner.includes("\n")) return inner;
   const out = [];
@@ -885,7 +853,7 @@ function singleQuoted(source) {
       out.push(inner[i]);
       i += 1;
     } else {
-      if (at(inner, i + 1) !== SQ) fail("UnexpectedToken");
+      if (at(inner, i + 1) !== SQ) fail("a `'` inside a single-quoted string must be doubled");
       out.push("'");
       i += 2;
     }
@@ -895,25 +863,15 @@ function singleQuoted(source) {
 
 // The UTF-8 bytes of a codepoint, as a one-char-per-byte string.
 function utf8Of(cp) {
-  if ((cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff) fail("InvalidUnicodeEscape");
-  return fig.binOf(String.fromCodePoint(cp));
+  if (fig.isSurrogate(cp) || cp > 0x10ffff) fail("an escape names no character: a surrogate, or a codepoint past U+10FFFF");
+  return fig.utf8Bytes(cp).map((b) => String.fromCharCode(b)).join("");
 }
 
-// `std.fmt.parseInt(u21, …, 16)` of the next `digits` bytes, quirks and
-// all: a leading sign and interior `_` separators are accepted there.
+// The codepoint the `digits` hex digits at `start` spell.
 function hexEscape(inner, start, digits) {
-  if (start + digits > inner.length) fail("UnclosedString");
-  let h = inner.slice(start, start + digits);
-  let neg = false;
-  if (at(h, 0) === PLUS) h = h.slice(1);
-  else if (at(h, 0) === DASH) {
-    neg = true;
-    h = h.slice(1);
-  }
-  if (h.length === 0 || at(h, 0) === USCORE || at(h, h.length - 1) === USCORE || !/^[0-9a-fA-F_]+$/.test(h)) fail("InvalidUnicodeEscape");
-  const v = parseInt(h.replace(/_/g, ""), 16);
-  if (v > 0x1fffff || (neg && v !== 0)) fail("InvalidUnicodeEscape");
-  return v;
+  const h = inner.slice(start, start + digits);
+  if (!/^[0-9a-fA-F]+$/.test(h) || h.length !== digits) fail("an escape needs " + digits + " hex digits after it");
+  return parseInt(h, 16);
 }
 
 const SIMPLE_ESCAPES = new Map([
@@ -923,7 +881,7 @@ const SIMPLE_ESCAPES = new Map([
 const CODEPOINT_ESCAPES = new Map([[78, 0x85], [USCORE, 0xa0], [76, 0x2028], [80, 0x2029]]);
 
 function doubleQuoted(source) {
-  if (source.length < 2 || at(source, 0) !== DQ || at(source, source.length - 1) !== DQ) fail("UnclosedString");
+  if (source.length < 2 || at(source, 0) !== DQ || at(source, source.length - 1) !== DQ) fail("this double-quoted string is never closed");
   const inner = source.slice(1, -1);
   if (!inner.includes("\\") && !inner.includes("\n")) return inner;
   const out = [];
@@ -938,7 +896,7 @@ function doubleQuoted(source) {
       i += 1;
     } else {
       i += 1;
-      if (i >= n) fail("UnclosedString");
+      if (i >= n) fail("a `\\` at the end of a double-quoted string escapes nothing");
       if (at(inner, i) === CR && at(inner, i + 1) === NL) i += 1;
       if (at(inner, i) === NL) {
         i += 1;
@@ -959,7 +917,7 @@ function doubleQuoted(source) {
           out.push(utf8Of(hexEscape(inner, i + 1, 8)));
           i += 8;
         } else {
-          fail("UnexpectedToken");
+          fail("unknown escape in a double-quoted string");
         }
         i += 1;
       }
@@ -968,8 +926,8 @@ function doubleQuoted(source) {
   return out.join("");
 }
 
-// The physical lines of `s`, `\r\n` read as one break; a trailing newline
-// yields a final empty line, as the compiled iterator's does.
+// The physical lines of `s`, `\r\n` read as one break; a trailing
+// newline yields a final empty line.
 function linesOf(s) {
   const out = [];
   let i = 0;
@@ -1075,50 +1033,17 @@ function isInfNan(source) {
   return eqlAny(source, [".nan", ".NaN", ".NAN"]);
 }
 
-// The 1.2 core schema's numbers: "int", "float" or null.
+// The 1.2 core schema's numbers: a hex or octal lexeme, or decimal
+// digits with an optional fraction and an optional exponent — "int",
+// "float" or null.
+const CORE_RADIX = /^0(x[0-9a-fA-F]+|o[0-7]+)$/;
+const CORE_INT = /^[-+]?[0-9]+$/;
+const CORE_FLOAT = /^[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/;
+
 function classifyNumber(source) {
-  const n = source.length;
-  if (n === 0) return null;
   if (isInfNan(source)) return "float";
-  if (n > 2 && at(source, 0) === 48 && (at(source, 1) === 120 || at(source, 1) === 111)) {
-    const hex = at(source, 1) === 120;
-    for (let i = 2; i < n; i++) {
-      const c = at(source, i);
-      if (!(hex ? isHex(c) : isOctal(c))) return null;
-    }
-    return "int";
-  }
-  let i = 0;
-  const c0 = at(source, 0);
-  if (c0 === PLUS || c0 === DASH) i = 1;
-  let mantissa = 0;
-  while (i < n && isDigit(at(source, i))) {
-    i += 1;
-    mantissa += 1;
-  }
-  let float = false;
-  if (i < n && at(source, i) === DOT) {
-    float = true;
-    i += 1;
-    while (i < n && isDigit(at(source, i))) {
-      i += 1;
-      mantissa += 1;
-    }
-  }
-  if (mantissa === 0) return null;
-  if (i < n && (at(source, i) === 101 || at(source, i) === 69)) {
-    float = true;
-    i += 1;
-    if (i < n && (at(source, i) === PLUS || at(source, i) === DASH)) i += 1;
-    let exp = 0;
-    while (i < n && isDigit(at(source, i))) {
-      i += 1;
-      exp += 1;
-    }
-    if (exp === 0) return null;
-  }
-  if (i !== n) return null;
-  return float ? "float" : "int";
+  if (CORE_RADIX.test(source) || CORE_INT.test(source)) return "int";
+  return CORE_FLOAT.test(source) ? "float" : null;
 }
 
 // ── YAML 1.1 resolution ───────────────────────────────────────────────────
@@ -1129,74 +1054,27 @@ function bool11(source) {
   return null;
 }
 
-function digitRun(s, pred) {
-  let any = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = at(s, i);
-    if (c !== USCORE) {
-      if (!pred(c)) return false;
-      any = true;
-    }
-  }
-  return any;
-}
+// A run of `cls` digits with `_` separators anywhere between them, at
+// least one digit: 1.1 spells `0b1010_1010` and `0x_FF` alike.
+const digitRun = (s, cls) => new RegExp(`^[${cls}_]*[${cls}][${cls}_]*$`).test(s);
 
-function is11Base10Float(s) {
-  let i = 0;
-  const n = s.length;
-  if (i < n && isDigit(at(s, i))) {
-    i += 1;
-    while (i < n && (isDigit(at(s, i)) || at(s, i) === USCORE)) i += 1;
-  }
-  if (i >= n || at(s, i) !== DOT) return false;
-  i += 1;
-  while (i < n && (isDigit(at(s, i)) || at(s, i) === USCORE)) i += 1;
-  if (i < n && (at(s, i) === 101 || at(s, i) === 69)) {
-    i += 1;
-    if (i >= n || (at(s, i) !== PLUS && at(s, i) !== DASH)) return false;
-    i += 1;
-    let exp = 0;
-    while (i < n && isDigit(at(s, i))) {
-      i += 1;
-      exp += 1;
-    }
-    if (exp === 0) return false;
-  }
-  return i === n;
-}
+// 1.1's base-10 float: an optional integer part, a `.`, and an exponent
+// whose sign is not optional.
+const FLOAT_11 = /^(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+][0-9]+)?$/;
+const is11Base10Float = (s) => FLOAT_11.test(s);
+
+// 1.1's sexagesimal: `1:30`, `190:20:30.15` — groups of at most two
+// digits under sixty after the first. A leading zero on the first group
+// makes it an octal instead, unless a fraction follows.
+const BASE60_11 = /^[0-9][0-9_]*(?::[0-5]?[0-9])+$/;
 
 function classify11Base60(s) {
-  let body = s;
-  let float = false;
   const dot = s.indexOf(".");
-  if (dot !== -1) {
-    float = true;
-    for (let i = dot + 1; i < s.length; i++) {
-      const c = at(s, i);
-      if (!(isDigit(c) || c === USCORE)) return null;
-    }
-    body = s.slice(0, dot);
-  }
-  const groups = body.split(":");
-  let trailing = 0;
-  for (let idx = 0; idx < groups.length; idx++) {
-    const g = groups[idx];
-    if (g.length === 0) return null;
-    if (idx === 0) {
-      if (!isDigit(at(g, 0))) return null;
-      if (!float && at(g, 0) === 48) return null;
-      for (let i = 1; i < g.length; i++) {
-        const c = at(g, i);
-        if (!(isDigit(c) || c === USCORE)) return null;
-      }
-    } else {
-      if (g.length > 2) return null;
-      for (let i = 0; i < g.length; i++) if (!isDigit(at(g, i))) return null;
-      if (g.length === 2 && at(g, 0) > 53) return null;
-      trailing += 1;
-    }
-  }
-  if (trailing === 0) return null;
+  const float = dot !== -1;
+  if (float && !/^[0-9_]*$/.test(s.slice(dot + 1))) return null;
+  const body = float ? s.slice(0, dot) : s;
+  if (!BASE60_11.test(body)) return null;
+  if (!float && at(body, 0) === 48) return null;
   return float ? "float" : "int";
 }
 
@@ -1206,88 +1084,25 @@ function classify11Number(source) {
   let s = source;
   const c = at(s, 0);
   if (c === PLUS || c === DASH) s = s.slice(1);
-  if (s.length === 0) return null;
   if (s.includes(":")) return classify11Base60(s);
-  if (s.length >= 2 && at(s, 0) === 48 && (at(s, 1) === 120 || at(s, 1) === 88)) return digitRun(s.slice(2), isHex) ? "int" : null;
-  if (s.length >= 2 && at(s, 0) === 48 && (at(s, 1) === 98 || at(s, 1) === 66)) return digitRun(s.slice(2), isBinary) ? "int" : null;
+  if (/^0[xX]/.test(s)) return digitRun(s.slice(2), "0-9a-fA-F") ? "int" : null;
+  if (/^0[bB]/.test(s)) return digitRun(s.slice(2), "01") ? "int" : null;
   if (s.includes(".")) return is11Base10Float(s) ? "float" : null;
-  if (s.length >= 2 && at(s, 0) === 48) return digitRun(s.slice(1), isOctal) ? "int" : null;
-  if (s.length === 1 && at(s, 0) === 48) return "int";
-  const first = at(s, 0);
-  if (first >= 49 && first <= 57) {
-    for (let i = 1; i < s.length; i++) {
-      const cc = at(s, i);
-      if (!(isDigit(cc) || cc === USCORE)) return null;
-    }
-    return "int";
-  }
-  return null;
+  if (s.length >= 2 && at(s, 0) === 48) return digitRun(s.slice(1), "0-7") ? "int" : null;
+  return /^[0-9][0-9_]*$/.test(s) ? "int" : null;
 }
 
-// `util/datetime.zig`'s validator, as the 1.1 timestamp needs it: a date,
-// or a date-time with seconds and an optional zone; no time-only and no
-// minute precision.
-const two = (s, i) => (at(s, i) - 48) * 10 + (at(s, i + 1) - 48);
-const bothDigits = (s, i) => i + 1 < s.length && isDigit(at(s, i)) && isDigit(at(s, i + 1));
-
-function validDate(s) {
-  if (s.length !== 10 || at(s, 4) !== DASH || at(s, 7) !== DASH) return false;
-  if (!(bothDigits(s, 0) && bothDigits(s, 2) && bothDigits(s, 5) && bothDigits(s, 8))) return false;
-  const year = two(s, 0) * 100 + two(s, 2);
-  const month = two(s, 5);
-  const day = two(s, 8);
-  if (month < 1 || month > 12) return false;
-  let days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
-  if (month === 2 && ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)) days = 29;
-  return day >= 1 && day <= days;
-}
-
-function validTime(s) {
-  if (s.length < 5 || at(s, 2) !== COLON) return false;
-  if (!(bothDigits(s, 0) && bothDigits(s, 3))) return false;
-  if (two(s, 0) > 23 || two(s, 3) > 59) return false;
-  if (s.length === 5) return false;
-  if (at(s, 5) !== COLON || s.length < 8) return false;
-  if (!bothDigits(s, 6) || two(s, 6) > 60) return false;
-  if (s.length === 8) return true;
-  if (at(s, 8) !== DOT || s.length < 10) return false;
-  return /^[0-9]+$/.test(s.slice(9));
-}
-
-function validOffset(s) {
-  if (s.length !== 6 || at(s, 3) !== COLON) return false;
-  if (!(bothDigits(s, 1) && bothDigits(s, 4))) return false;
-  return two(s, 1) <= 23 && two(s, 4) <= 59;
-}
-
-function classify11Timestamp(raw) {
-  if (raw.length < 10) return null;
-  if (!validDate(raw.slice(0, 10))) return null;
-  if (raw.length === 10) return "local_date";
-  const sep = at(raw, 10);
-  if (sep !== 84 && sep !== 116 && sep !== SP) return null;
-  const rest = raw.slice(11);
-  let timeStr = rest;
-  let hasOffset = false;
-  const lastc = at(rest, rest.length - 1);
-  if (rest.length > 0 && (lastc === 90 || lastc === 122)) {
-    timeStr = rest.slice(0, -1);
-    hasOffset = true;
-  } else if (rest.length >= 6 && (at(rest, rest.length - 6) === PLUS || at(rest, rest.length - 6) === DASH) && at(rest, rest.length - 3) === COLON) {
-    if (!validOffset(rest.slice(-6))) return null;
-    timeStr = rest.slice(0, -6);
-    hasOffset = true;
-  }
-  if (!validTime(timeStr)) return null;
-  return hasOffset ? "offset_datetime" : "local_datetime";
-}
+// 1.1's timestamp, which is `fig/datetime`'s with two of its dialect
+// switches off: a bare `12:30:00` is sexagesimal here, not a time, and
+// the seconds of a datetime are not optional.
+const TIMESTAMP_11 = { timeOnly: false, minutePrecision: false };
 
 // ── the parser ────────────────────────────────────────────────────────────
-// `parser.zig`: a container stack over the token stream. Nodes are the
-// tree nodes of `fig`, given their properties, markers and separators as
-// the compiled parser records them, and laid out by `fig.rows`.
+// A container stack over the token stream. Nodes are the tree nodes of
+// `fig`, given their properties, markers and separators, and laid out by
+// `fig.rows`.
 
-const commentText = (raw) => (at(raw, 0) === HASH ? raw.slice(1) : raw).replace(/^[ \t\r]+/, "").replace(/[ \t\r]+$/, "");
+const commentText = (raw) => fig.trimComment(at(raw, 0) === HASH ? raw.slice(1) : raw);
 
 function invalidFlowScalar(source) {
   if (source.length === 0) return true;
@@ -1316,37 +1131,38 @@ function skipDirectiveSpace(line, i) {
 
 const isYamlVersion = (s) => /^[0-9]+\.[0-9]+$/.test(s);
 
-function requireDirectiveEnd(line, i) {
+function requireDirectiveEnd(line, i, base) {
   const j = skipDirectiveSpace(line, i);
-  if (j < line.length && at(line, j) !== HASH) fail("InvalidDirective");
+  if (j < line.length && at(line, j) !== HASH) fail("a directive takes nothing after its arguments but a comment", base + j);
 }
+
+// The token kinds that would begin a second document after a `...` line.
+const CONTENT_AFTER_END = new Set([
+  "dash", "explicit_key", "colon", "scalar", "alias", "block_header", "flow_seq_start", "flow_map_start", "tag", "anchor",
+]);
 
 class Parser {
   constructor(src, tokens, version) {
     this.src = src;
     this.tokens = tokens;
-    this.index = 0;
     this.version = version;
+    this.index = 0;
     this.nodes = [];
     this.anchors = [];
     this.stack = [];
-    this.pendingTag = null;
-    this.pendingAnchor = null;
-    this.containerTag = null;
-    this.containerAnchor = null;
     this.tagDirectives = [];
+    // the properties and the comments waiting for the node they belong to
+    this.pendingTag = this.pendingAnchor = this.containerTag = this.containerAnchor = null;
     this.pendingLeading = [];
     this.lastValueId = null;
-    this.colonLine = false;
-    this.parkingContainer = false;
-    this.forceNewContainer = false;
-    this.valueOnlyIndents = 0;
     this.root = null;
-    this.docStarted = false;
-    this.docEnded = false;
-    this.onDocStartLine = false;
-    this.directivesPending = false;
-    this.yamlDirectiveSeen = false;
+    // where the line stands: a `:` seen, a container parked while its
+    // properties are read, an `indent` that must open a new one
+    this.colonLine = this.parkingContainer = this.forceNewContainer = false;
+    this.valueOnlyIndents = 0;
+    // the document: `---`, `...`, and the directives above them
+    this.docStarted = this.docEnded = this.onDocStartLine = false;
+    this.directivesPending = this.yamlDirectiveSeen = false;
   }
 
   peek() {
@@ -1474,7 +1290,7 @@ class Parser {
 
   // ── properties ──
 
-  validateTagHandle(text) {
+  validateTagHandle(text, pos) {
     if (text.length < 2) return;
     const c1 = at(text, 1);
     if (c1 === LT || c1 === BANG) return;
@@ -1482,13 +1298,13 @@ class Parser {
     if (close === -1) return;
     const handle = text.slice(0, close + 1);
     for (const d of this.tagDirectives) if (d.handle === handle) return;
-    fail("UndefinedTagHandle");
+    fail("tag handle `" + handle + "` was never declared by a `%TAG` directive", pos);
   }
 
   stashTag(text, s, e) {
-    this.validateTagHandle(text);
+    this.validateTagHandle(text, s);
     if (this.pendingTag) {
-      if (this.containerTag) fail("DuplicateProperty");
+      if (this.containerTag) fail("a node takes one tag", s);
       this.containerTag = this.pendingTag;
       this.pendingTag = null;
     }
@@ -1497,7 +1313,7 @@ class Parser {
 
   stashAnchor(name, s, e) {
     if (this.pendingAnchor) {
-      if (this.containerAnchor) fail("DuplicateProperty");
+      if (this.containerAnchor) fail("a node takes one anchor", s);
       this.containerAnchor = this.pendingAnchor;
       this.pendingAnchor = null;
     }
@@ -1571,17 +1387,24 @@ class Parser {
     }
     this.parkingContainer = false;
     this.stack.push({
-      id, kind, firstChild: null, pendingKey: null, pendingValueSpan: 0,
-      pendingValueTrailing: null, pendingSequenceItemSpan: null, pendingSequenceItem: false,
-      currentMarker: null, pendingSepSpan: null, continuesSequenceItem: false,
-      sharesParentIndent: false, explicitAwaitingValue: false, buildingExplicitKey: false,
-      explicitKeyCol: 0,
+      id, kind, firstChild: null, pendingKey: null, pendingValueSpan: 0, pendingValueTrailing: null,
+      pendingSequenceItemSpan: null, pendingSequenceItem: false, currentMarker: null, pendingSepSpan: null,
+      continuesSequenceItem: false, sharesParentIndent: false, explicitAwaitingValue: false,
+      buildingExplicitKey: false, explicitKeyCol: 0,
     });
     return id;
   }
 
+  // A container opened for the node in hand that continues the sequence
+  // item or the explicit key above it, rather than standing on its own.
+  openNested(kind, start) {
+    const id = this.openContainer(kind, start ?? this.peek().s);
+    this.containerById(id).continuesSequenceItem = true;
+    return id;
+  }
+
   closeContainer(spanEnd) {
-    if (this.stack.length === 0) fail("UnexpectedToken");
+    if (this.stack.length === 0) fail("nothing is open here to close", spanEnd);
     const c = this.stack.pop();
     if (c.firstChild === null) this.spanOf(c.id)[1] = spanEnd;
     return c.id;
@@ -1594,7 +1417,7 @@ class Parser {
       if (kind === "mapping" && current.kind === "sequence") {
         let hasEnclosingMapping = false;
         for (let i = 0; i < this.stack.length - 1; i++) if (this.stack[i].kind === "mapping") hasEnclosingMapping = true;
-        if (!hasEnclosingMapping) fail("UnexpectedToken");
+        if (!hasEnclosingMapping) fail("a `key:` here would belong to no mapping: the item it is in already holds a value", this.peek().s);
         this.closePendingEmptyValue();
         const id = this.closeContainer(this.spanOf(current.id)[1]);
         this.finishValue(id);
@@ -1635,7 +1458,7 @@ class Parser {
   finishValue(valueId) {
     this.lastValueId = valueId;
     if (this.stack.length === 0) {
-      if (this.root !== null) fail("UnexpectedToken");
+      if (this.root !== null) fail("a second top-level value; a document holds one", this.spanOf(valueId)[0]);
       this.root = valueId;
       return;
     }
@@ -1658,7 +1481,7 @@ class Parser {
       return;
     }
     const keyId = parent.pendingKey;
-    if (keyId === null) fail("UnexpectedToken");
+    if (keyId === null) fail("a value with no key", this.spanOf(valueId)[0]);
     parent.pendingKey = null;
     parent.explicitAwaitingValue = false;
     if (parent.pendingValueTrailing) {
@@ -1732,7 +1555,7 @@ class Parser {
       if (b !== null) return ["bool", b ? "true" : "false"];
       const num = classify11Number(source);
       if (num) return [num, source];
-      const ts = classify11Timestamp(source);
+      const ts = DT.classify(source, TIMESTAMP_11);
       if (ts) return ["string", source, ts];
       return ["string", fig.fromBin(source)];
     }
@@ -1746,14 +1569,14 @@ class Parser {
 
   parseScalar() {
     const t = this.peek();
-    if (t.kind !== "scalar") fail("UnexpectedToken");
+    if (t.kind !== "scalar") fail("expected a scalar here", t.s);
     this.advance();
     const [kind, text, ext] = this.scalarKind(this.text(t));
     return this.addNode(kind, t.s, t.e, { text, ext_kind: ext });
   }
 
   parseAlias() {
-    if (this.pendingAnchor || this.pendingTag) fail("UnexpectedToken");
+    if (this.pendingAnchor || this.pendingTag) fail("an alias carries no anchor or tag of its own", this.peek().s);
     const t = this.advance();
     return this.addNode("alias", t.s, t.e, { text: this.src.slice(t.s + 1, t.e) });
   }
@@ -1802,7 +1625,7 @@ class Parser {
   requireValueEnd() {
     while (this.peek().kind === "whitespace") this.advance();
     const k = this.peek().kind;
-    if (!(k === "newline" || k === "comment" || k === "dedent" || k === "end_of_file")) fail("UnexpectedToken");
+    if (!(k === "newline" || k === "comment" || k === "dedent" || k === "end_of_file")) fail("a value must end its line; nothing may follow it but a comment", this.peek().s);
   }
 
   tabBetween(from, to) {
@@ -1838,10 +1661,10 @@ class Parser {
     if (k === "flow_map_start") return this.parseFlowMapping();
     if (k === "alias") return this.parseAlias();
     if (k === "scalar") {
-      if (invalidFlowScalar(this.text(this.peek()))) fail("UnexpectedToken");
+      if (invalidFlowScalar(this.text(this.peek()))) fail("a plain scalar inside a flow collection cannot begin this way", this.peek().s);
       return this.parseScalar();
     }
-    fail("UnexpectedToken");
+    fail("expected a value inside this flow collection", this.peek().s);
   }
 
   wrapFlowPair(keyId, valueId) {
@@ -1862,7 +1685,7 @@ class Parser {
     if (k === "colon") {
       keyId = this.addNull(this.peek().s, this.peek().e);
     } else if (k === "comma" || k === "flow_seq_end") {
-      if (!explicit) fail("UnexpectedToken");
+      if (!explicit) fail("expected a value before this `,` or `]`", this.peek().s);
       keyId = this.addNull(this.peek().s, this.peek().e);
     } else {
       keyId = this.parseFlowNode();
@@ -1893,7 +1716,7 @@ class Parser {
     const seq = this.node(seqId);
     this.skipFlowTrivia();
     while (this.peek().kind !== "flow_seq_end") {
-      if (this.peek().kind === "end_of_file") fail("UnexpectedToken");
+      if (this.peek().kind === "end_of_file") fail("this flow sequence is never closed", open.s);
       const item = this.parseFlowSequenceItem();
       seq.items.push(this.node(item));
       this.skipFlowTrivia();
@@ -1902,7 +1725,7 @@ class Parser {
         this.advance();
         this.skipFlowTrivia();
       } else if (k !== "flow_seq_end") {
-        fail("UnexpectedToken");
+        fail("expected `,` or `]` here", this.peek().s);
       }
     }
     const close = this.advance();
@@ -1916,7 +1739,7 @@ class Parser {
     const map = this.node(mapId);
     this.skipFlowTrivia();
     while (this.peek().kind !== "flow_map_end") {
-      if (this.peek().kind === "end_of_file") fail("UnexpectedToken");
+      if (this.peek().kind === "end_of_file") fail("this flow mapping is never closed", open.s);
       if (this.peek().kind === "explicit_key") {
         this.advance();
         this.skipFlowTrivia();
@@ -1951,7 +1774,7 @@ class Parser {
         this.advance();
         this.skipFlowTrivia();
       } else if (nk !== "flow_map_end") {
-        fail("UnexpectedToken");
+        fail("expected `,` or `}` here", this.peek().s);
       }
     }
     const close = this.advance();
@@ -1967,7 +1790,7 @@ class Parser {
     const k = this.peek().kind;
     if (k === "scalar") {
       if (allowCompact && this.isMappingStart()) {
-        if (this.tabBetween(this.current().pendingValueSpan, this.peek().s)) fail("UnexpectedToken");
+        if (this.tabBetween(this.current().pendingValueSpan, this.peek().s)) fail("a tab cannot separate a key from the `:` above it", this.peek().s);
         const childId = this.openContainer("mapping", this.peek().s);
         this.parseMappingEntry();
         const id = this.closeContainer(this.spanOf(childId)[1]);
@@ -1978,9 +1801,8 @@ class Parser {
         this.requireValueEnd();
       }
     } else if (k === "dash") {
-      if (!allowCompact) fail("UnexpectedToken");
-      const seqId = this.openContainer("sequence", this.peek().s);
-      this.containerById(seqId).continuesSequenceItem = true;
+      if (!allowCompact) fail("a `-` item cannot begin on the line of the `:` it belongs to", this.peek().s);
+      this.openNested("sequence");
       this.parseSequenceEntry();
     } else if (k === "block_header") {
       this.finishValue(this.parseBlockScalar());
@@ -1993,7 +1815,7 @@ class Parser {
     } else if (k === "newline" || k === "dedent" || k === "end_of_file") {
       // deferred
     } else {
-      fail("UnexpectedToken");
+      fail("expected a value after `:`", this.peek().s);
     }
   }
 
@@ -2004,7 +1826,7 @@ class Parser {
     this.releaseKeyLineProps(held);
     const keyId = this.parseKeyNode();
     this.skipTriviaNoNewline();
-    if (this.peek().kind !== "colon") fail("UnexpectedToken");
+    if (this.peek().kind !== "colon") fail("expected `:` after this key", this.peek().s);
     const colon = this.advance();
     const parent = this.containerById(mappingId);
     parent.pendingKey = keyId;
@@ -2041,11 +1863,10 @@ class Parser {
     let keyId;
     if (k === "scalar") {
       if (this.isMappingStart()) {
-        if (this.tabBetween(marker.e, this.peek().s)) fail("UnexpectedToken");
+        if (this.tabBetween(marker.e, this.peek().s)) fail("a tab cannot separate `?` from its key", this.peek().s);
         m.buildingExplicitKey = true;
         m.explicitKeyCol = this.columnOf(marker.s);
-        const keyMapId = this.openContainer("mapping", this.peek().s);
-        this.containerById(keyMapId).continuesSequenceItem = true;
+        this.openNested("mapping");
         this.parseMappingEntry();
         return;
       }
@@ -2056,8 +1877,7 @@ class Parser {
       if (this.peek().kind === "colon") {
         m.buildingExplicitKey = true;
         m.explicitKeyCol = this.columnOf(marker.s);
-        const keyMapId = this.openContainer("mapping", this.spanOf(nodeId)[0]);
-        this.containerById(keyMapId).continuesSequenceItem = true;
+        const keyMapId = this.openNested("mapping", this.spanOf(nodeId)[0]);
         const colon = this.advance();
         const km = this.containerById(keyMapId);
         km.pendingKey = nodeId;
@@ -2074,21 +1894,19 @@ class Parser {
     } else if (k === "dash") {
       m.buildingExplicitKey = true;
       m.explicitKeyCol = this.columnOf(marker.s);
-      const seqId = this.openContainer("sequence", this.peek().s);
-      this.containerById(seqId).continuesSequenceItem = true;
+      this.openNested("sequence");
       this.parseSequenceEntry();
       return;
     } else if (k === "colon") {
       m.buildingExplicitKey = true;
       m.explicitKeyCol = this.columnOf(marker.s);
-      const keyMapId = this.openContainer("mapping", this.peek().s);
-      this.containerById(keyMapId).continuesSequenceItem = true;
+      this.openNested("mapping");
       this.parseEmptyKeyEntry();
       return;
     } else if (k === "newline" || k === "dedent" || k === "end_of_file") {
       keyId = this.addNull(marker.e, marker.e);
     } else {
-      fail("UnexpectedToken");
+      fail("expected a key after `?`", this.peek().s);
     }
     const parent = this.containerById(mappingId);
     parent.pendingKey = keyId;
@@ -2112,8 +1930,7 @@ class Parser {
     } else if (k === "scalar") {
       if (this.isMappingStart()) {
         const held = this.holdKeyLineProps();
-        const mappingId = this.openContainer("mapping", this.peek().s);
-        this.containerById(mappingId).continuesSequenceItem = true;
+        this.openNested("mapping");
         this.releaseKeyLineProps(held);
         this.parseMappingEntry();
       } else {
@@ -2123,8 +1940,7 @@ class Parser {
       this.finishValue(this.parseBlockScalar());
     } else if (k === "alias") {
       if (this.isMappingStart()) {
-        const mappingId = this.openContainer("mapping", this.peek().s);
-        this.containerById(mappingId).continuesSequenceItem = true;
+        this.openNested("mapping");
         this.parseMappingEntry();
       } else {
         this.finishValue(this.parseAlias());
@@ -2132,49 +1948,48 @@ class Parser {
     } else if (k === "flow_seq_start" || k === "flow_map_start") {
       this.finishValue(this.parseFlowNode());
     } else if (k === "explicit_key") {
-      const mappingId = this.openContainer("mapping", this.peek().s);
-      this.containerById(mappingId).continuesSequenceItem = true;
+      this.openNested("mapping");
       this.parseExplicitKey();
     } else if (k === "colon") {
-      const mappingId = this.openContainer("mapping", this.peek().s);
-      this.containerById(mappingId).continuesSequenceItem = true;
+      this.openNested("mapping");
       this.parseEmptyKeyEntry();
     } else if (k === "dash") {
-      const innerId = this.openContainer("sequence", this.peek().s);
-      this.containerById(innerId).continuesSequenceItem = true;
+      this.openNested("sequence");
       this.parseSequenceEntry();
     } else {
-      fail("UnexpectedToken");
+      fail("expected a value after `-`", this.peek().s);
     }
   }
 
   // ── directives ──
 
-  parseDirective(line) {
+  parseDirective(tok) {
+    const line = this.text(tok);
+    const base = tok.s;
     let i = 1;
     const nameStart = i;
     while (i < line.length && !isDirectiveSpace(at(line, i))) i += 1;
     const name = line.slice(nameStart, i);
-    if (name.length === 0) fail("InvalidDirective");
+    if (name.length === 0) fail("a `%` directive needs a name", base);
     if (name === "YAML") {
-      if (this.yamlDirectiveSeen) fail("InvalidDirective");
+      if (this.yamlDirectiveSeen) fail("a second `%YAML` directive", base);
       this.yamlDirectiveSeen = true;
       i = skipDirectiveSpace(line, i);
       const verStart = i;
       while (i < line.length && !isDirectiveSpace(at(line, i))) i += 1;
-      if (!isYamlVersion(line.slice(verStart, i))) fail("InvalidDirective");
-      requireDirectiveEnd(line, i);
+      if (!isYamlVersion(line.slice(verStart, i))) fail("a `%YAML` directive takes a version like `1.2`", base + verStart);
+      requireDirectiveEnd(line, i, base);
     } else if (name === "TAG") {
       i = skipDirectiveSpace(line, i);
       const handleStart = i;
       while (i < line.length && !isDirectiveSpace(at(line, i))) i += 1;
       const handle = line.slice(handleStart, i);
-      if (handle.length === 0) fail("InvalidDirective");
+      if (handle.length === 0) fail("a `%TAG` directive takes a handle and a prefix", base + i);
       i = skipDirectiveSpace(line, i);
       const prefixStart = i;
       while (i < line.length && !isDirectiveSpace(at(line, i))) i += 1;
-      if (i === prefixStart) fail("InvalidDirective");
-      requireDirectiveEnd(line, i);
+      if (i === prefixStart) fail("a `%TAG` directive takes a handle and a prefix", base + prefixStart);
+      requireDirectiveEnd(line, i, base);
       this.tagDirectives.push({ handle, prefix: line.slice(prefixStart, i) });
     }
   }
@@ -2190,7 +2005,7 @@ class Parser {
         if (a.node >= id) break;
         if (a.name === n.text) found = true;
       }
-      if (!found) fail("UndefinedAlias");
+      if (!found) fail("alias `*" + n.text + "` names an anchor that is not defined above it", n.span[0]);
     }
   }
 
@@ -2198,8 +2013,9 @@ class Parser {
     for (;;) {
       this.skipTriviaNoNewline();
       const k = this.peek().kind;
-      if (this.valueOnlyIndents > 0 && !(k === "newline" || k === "dedent" || k === "end_of_file")) fail("UnexpectedToken");
-      if (this.directivesPending && !(k === "directive" || k === "newline" || k === "doc_start")) fail("InvalidDirective");
+      if (this.valueOnlyIndents > 0 && !(k === "newline" || k === "dedent" || k === "end_of_file")) fail("nothing may follow a value on the line it was indented onto", this.peek().s);
+      if (this.directivesPending && !(k === "directive" || k === "newline" || k === "doc_start")) fail("a directive must be followed by `---`", this.peek().s);
+      if (this.docEnded && CONTENT_AFTER_END.has(k)) fail("content after `...` begins a second document; this format reads one per file", this.peek().s);
       if (k === "indent") {
         if (this.stack.length > 0 && this.current().continuesSequenceItem) {
           if (this.columnOf(this.peek().e) > this.currentContainerIndent()) this.forceNewContainer = true;
@@ -2239,31 +2055,28 @@ class Parser {
         this.onDocStartLine = false;
         this.advance();
       } else if (k === "doc_start") {
-        if (this.docStarted || this.nodes.length > 0) fail("MultipleDocuments");
+        if (this.docStarted || this.nodes.length > 0) fail("a second document begins here; this format reads one document per file", this.peek().s);
         this.docStarted = true;
         this.onDocStartLine = true;
         this.directivesPending = false;
         this.advance();
       } else if (k === "directive") {
-        if (this.docStarted || this.docEnded || this.root !== null || this.nodes.length > 0 || this.stack.length > 0) fail("InvalidDirective");
+        if (this.docStarted || this.docEnded || this.root !== null || this.nodes.length > 0 || this.stack.length > 0) fail("a directive must come before the document it applies to", this.peek().s);
         const tok = this.advance();
-        this.parseDirective(this.text(tok));
+        this.parseDirective(tok);
         this.directivesPending = true;
       } else if (k === "doc_end") {
         this.docEnded = true;
         this.advance();
       } else if (k === "dash") {
-        if (this.docEnded) fail("MultipleDocuments");
-        if (this.onDocStartLine) fail("UnexpectedToken");
-        if (this.pendingPropOnLineOf(this.peek().s)) fail("UnexpectedToken");
+        if (this.onDocStartLine) fail("a `-` item cannot share the `---` line", this.peek().s);
+        if (this.pendingPropOnLineOf(this.peek().s)) fail("an anchor or a tag cannot precede the `-` of a sequence item", this.peek().s);
         this.closeSequenceItemContinuation();
         this.parseSequenceEntry();
       } else if (k === "explicit_key") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeSequenceItemContinuation();
         this.parseExplicitKey();
       } else if (k === "colon") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeOpenComplexKey();
         if (this.stack.length > 0 && this.current().buildingExplicitKey) {
           const nullKey = this.addNull(this.peek().s, this.peek().s);
@@ -2283,40 +2096,36 @@ class Parser {
           this.parseEmptyKeyEntry();
         }
       } else if (k === "scalar") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeSequenceItemContinuation();
         if (this.isMappingStart()) {
-          if (this.onDocStartLine) fail("UnexpectedToken");
+          if (this.onDocStartLine) fail("a mapping cannot begin on the `---` line", this.peek().s);
           this.parseMappingEntry();
         } else if (this.stack.length === 0 && this.root === null) {
-          if (invalidPlainStart(this.text(this.peek()))) fail("UnexpectedToken");
+          if (invalidPlainStart(this.text(this.peek()))) fail("a plain scalar cannot begin with `,` or `? `", this.peek().s);
           this.finishValue(this.parseScalar());
         } else if (this.forceNewContainer && this.currentAwaitsValue()) {
           this.attachDeferredValue(this.parseScalar());
         } else {
-          fail("UnexpectedToken");
+          fail("unexpected value here", this.peek().s);
         }
       } else if (k === "alias") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeSequenceItemContinuation();
         if (this.isMappingStart()) this.parseMappingEntry();
         else if (this.stack.length === 0 && this.root === null) this.finishValue(this.parseAlias());
         else if (this.forceNewContainer && this.currentAwaitsValue()) this.attachDeferredValue(this.parseAlias());
-        else fail("UnexpectedToken");
+        else fail("unexpected alias here", this.peek().s);
       } else if (k === "block_header") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeSequenceItemContinuation();
         if (this.stack.length === 0 && this.root === null) this.finishValue(this.parseBlockScalar());
         else if (this.forceNewContainer && this.currentAwaitsValue()) this.attachDeferredValue(this.parseBlockScalar());
-        else fail("UnexpectedToken");
+        else fail("unexpected block scalar here", this.peek().s);
       } else if (k === "flow_seq_start" || k === "flow_map_start") {
-        if (this.docEnded) fail("MultipleDocuments");
         this.closeSequenceItemContinuation();
         const nodeId = this.parseFlowNode();
         this.skipTriviaNoNewline();
         if (this.peek().kind === "colon") {
           const span = this.spanOf(nodeId);
-          if (this.src.slice(span[0], span[1]).includes("\n")) fail("UnexpectedToken");
+          if (this.src.slice(span[0], span[1]).includes("\n")) fail("a flow collection spanning lines cannot be a key", span[0]);
           const mappingId = this.ensureContainer("mapping");
           this.closePendingEmptyValue();
           const colon = this.advance();
@@ -2329,19 +2138,18 @@ class Parser {
           this.attachDeferredValue(nodeId);
         }
       } else if (k === "tag" || k === "anchor") {
-        if (this.docEnded) fail("MultipleDocuments");
         const inContainer = this.stack.length > 0;
         this.consumePendingProperties();
         if (inContainer) {
           const nk = this.peek().kind;
           if (nk === "newline" || nk === "dedent" || nk === "end_of_file") {
-            if (!(this.forceNewContainer && this.currentAwaitsValue())) fail("UnexpectedToken");
+            if (!(this.forceNewContainer && this.currentAwaitsValue())) fail("an anchor or a tag here belongs to no node", this.peek().s);
           }
         }
       } else if (k === "end_of_file") {
         break;
       } else {
-        fail("UnexpectedToken");
+        fail("unexpected token here", this.peek().s);
       }
     }
 
@@ -2350,7 +2158,7 @@ class Parser {
       const id = this.closeContainer(this.peek().e);
       this.finishValue(id);
     }
-    if (this.containerAnchor || this.containerTag) fail("DuplicateProperty");
+    if (this.containerAnchor || this.containerTag) fail("a node takes one anchor and one tag", (this.containerAnchor ?? this.containerTag).s);
     this.resolveAliasesOrFail();
     let root = this.root;
     if (root === null) root = this.addNull(this.peek().s, this.peek().e);
@@ -2379,169 +2187,27 @@ function parse(dialect, input) {
 }
 
 // ── the printer ───────────────────────────────────────────────────────────
-// `printer.zig`: block style, two-space indentation whatever the options
-// say, a flow form for a collection value that fits `width` and carries
-// nothing flow cannot spell, a `|` block for a multi-line string, and a
-// scalar quoted exactly when the plain form would read back as something
-// else. Widths are byte widths, as the compiled printer measures them.
+// Block style, two-space indentation whatever the options say, a flow
+// form for a collection value that fits `width` and carries nothing flow
+// cannot spell, a `|` block for a multi-line string, and a scalar quoted
+// exactly when the plain form would read back as something else. Widths
+// are byte widths.
 
-const YAML_SPELLING = { hex: true, octal: true, leading_zero: true, bare_dot: true, plus: true };
+// A number is written as its own lexeme where YAML 1.2 reads that back
+// as the same number, and in decimal where it does not.
+const numberText = (raw) => N.text(raw, N.YAML_1_2);
 
-function spellable(raw, sp) {
-  let body = raw;
-  const first = raw[0];
-  if (first === "+" || first === "-") {
-    if (first === "+" && !sp.plus) return false;
-    body = raw.slice(1);
-  }
-  if (body === "") return false;
-  if (!sp.underscores && body.includes("_")) return false;
-  if (body.length >= 2 && body[0] === "0") {
-    const r = body[1].toLowerCase();
-    if (r === "x") return sp.hex === true;
-    if (r === "o") return sp.octal === true;
-    if (r === "b") return sp.binary === true;
-  }
-  if (!sp.bare_dot && (body[0] === "." || body[body.length - 1] === ".")) return false;
-  if (!sp.leading_zero) {
-    const m = body.search(/[.eE]/);
-    const intEnd = m === -1 ? body.length : m;
-    if (intEnd > 1 && body[0] === "0") return false;
-  }
-  return true;
-}
-
-function canonicalNumber(raw) {
-  let out = "";
-  let s = raw;
-  if (s[0] === "-") {
-    out = "-";
-    s = s.slice(1);
-  } else if (s[0] === "+") {
-    s = s.slice(1);
-  }
-  if (s.length >= 2 && s[0] === "0" && /[xob]/.test(s[1].toLowerCase())) {
-    const base = { x: 16, o: 8, b: 2 }[s[1].toLowerCase()];
-    const digits = s.slice(2).replace(/_/g, "");
-    const valid = digits !== "" && { 16: /^[0-9a-fA-F]+$/, 8: /^[0-7]+$/, 2: /^[01]+$/ }[base].test(digits);
-    if (valid) {
-      let v = 0n;
-      for (const ch of digits) v = v * BigInt(base) + BigInt(parseInt(ch, 16));
-      return out + v.toString();
-    }
-    return out + s;
-  }
-  const eIdx = s.search(/[eE]/);
-  const mantissa = eIdx === -1 ? s : s.slice(0, eIdx);
-  const exponent = eIdx === -1 ? "" : s.slice(eIdx);
-  const dot = mantissa.indexOf(".");
-  const intPart = dot === -1 ? mantissa : mantissa.slice(0, dot);
-  const intDigits = intPart.replace(/_/g, "").replace(/^0+/, "");
-  out += intDigits === "" ? "0" : intDigits;
-  if (dot !== -1) {
-    const frac = mantissa.slice(dot + 1).replace(/_/g, "");
-    out += "." + (frac === "" ? "0" : frac);
-  }
-  out += exponent.replace(/_/g, "");
-  return out;
-}
-
-const numberText = (raw) => (spellable(raw, YAML_SPELLING) ? raw : canonicalNumber(raw));
-
-// `std.fmt.parseInt(i64|u64, s, 10)` would accept `s`.
-function zigParseInt(s) {
-  let body = s;
-  let neg = false;
-  if (s[0] === "+") body = s.slice(1);
-  else if (s[0] === "-") {
-    neg = true;
-    body = s.slice(1);
-  }
-  if (body.length === 0) return false;
-  if (body[0] === "_" || body[body.length - 1] === "_") return false;
-  if (!/^[0-9_]+$/.test(body)) return false;
-  const d = body.replace(/_/g, "").replace(/^0+/, "");
-  if (d === "") return true;
-  const limit = neg ? "9223372036854775808" : "18446744073709551615";
-  if (d.length !== limit.length) return d.length < limit.length;
-  return d <= limit;
-}
-
-function validUnderscores(body, isd) {
-  const n = body.length;
-  for (let i = 0; i < n; i++) {
-    if (at(body, i) === USCORE) {
-      if (i === 0 || i + 1 === n) return false;
-      if (!isd(at(body, i - 1)) || !isd(at(body, i + 1))) return false;
-      i += 1;
-    }
-  }
-  return true;
-}
-
-// `std.fmt.parseFloat(f64, s)` would accept `s` (its `inf`/`nan` forms
-// are excluded by the caller).
-function zigParseFloat(s) {
-  let i = 0;
-  if (s[0] === "+" || s[0] === "-") i = 1;
-  if (i >= s.length) return false;
-  const rest = s.slice(i);
-  let base = 10;
-  let expc = 101;
-  let body = rest;
-  if (rest.length >= 2 && rest[0] === "0" && (rest[1] === "x" || rest[1] === "X")) {
-    base = 16;
-    expc = 112;
-    body = rest.slice(2);
-  }
-  const isd = base === 16 ? isHex : isDigit;
-  let j = 0;
-  const n = body.length;
-  let ndigits = 0;
-  let underscores = 0;
-  const scanDigits = () => {
-    while (j < n) {
-      const ch = at(body, j);
-      if (isd(ch)) {
-        j += 1;
-        ndigits += 1;
-      } else if (ch === USCORE) {
-        j += 1;
-        underscores += 1;
-      } else {
-        break;
-      }
-    }
-  };
-  scanDigits();
-  if (j < n && at(body, j) === DOT) {
-    j += 1;
-    scanDigits();
-  }
-  if (ndigits === 0) return false;
-  if (j < n && (at(body, j) | 0x20) === expc) {
-    j += 1;
-    if (j < n && (at(body, j) === PLUS || at(body, j) === DASH)) j += 1;
-    if (!(j < n && isDigit(at(body, j)))) return false;
-    while (j < n) {
-      const ch = at(body, j);
-      if (isDigit(ch)) j += 1;
-      else if (ch === USCORE) {
-        j += 1;
-        underscores += 1;
-      } else break;
-    }
-  }
-  if (j !== n) return false;
-  if (underscores > 0 && !validUnderscores(body, isd)) return false;
-  return true;
-}
-
-const containsCi = (hay, needle) => hay.toLowerCase().includes(needle);
+// Whether the plain form of `s` would read back as a number. The rule is
+// the compiled printer's, which asks Zig's `parseInt` and `parseFloat`:
+// they accept `_` separators, so `1_000` and `1__0` are quoted here even
+// though YAML 1.2 reads neither as a number.
+const ZIG_INT = /^[-+]?[0-9](?:[0-9_]*[0-9])?$/;
+const ZIG_FLOAT = /^[-+]?(?:[0-9](?:_?[0-9])*(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][-+]?[0-9](?:_?[0-9])*)?$/;
+const ZIG_HEX_FLOAT = /^[-+]?0[xX](?:[0-9a-fA-F](?:_?[0-9a-fA-F])*(?:\.(?:[0-9a-fA-F](?:_?[0-9a-fA-F])*)?)?|\.[0-9a-fA-F](?:_?[0-9a-fA-F])*)(?:[pP][-+]?[0-9](?:_?[0-9])*)?$/;
 
 function looksNumeric(s) {
-  if (containsCi(s, "inf") || containsCi(s, "nan")) return false;
-  return zigParseInt(s) || zigParseFloat(s);
+  if (/inf|nan/i.test(s)) return false;
+  return ZIG_INT.test(s) || ZIG_FLOAT.test(s) || ZIG_HEX_FLOAT.test(s);
 }
 
 const NON_STRING_KEYWORDS = [
@@ -2650,19 +2316,10 @@ class Printer {
     return w;
   }
 
-  hashLine(text) {
-    this.put("#");
-    if (text.length !== 0) this.put(" ", text);
-  }
-
   commentLines(list, depth) {
-    for (const c of list) {
-      for (const line of c.text.split("\n")) {
-        this.indent(depth);
-        this.hashLine(line.replace(/^[ \t]+/, "").replace(/[ \t]+$/, ""));
-        this.put("\n");
-      }
-    }
+    const w = fig.writer();
+    w.comments(list, "#", depth);
+    this.put(w.string());
   }
 
   leadingComments(row, depth) {
@@ -2703,14 +2360,25 @@ class Printer {
     if (row.tag !== undefined) this.put(" ", row.tag);
   }
 
-  scalarKey(row) {
+  // The text a scalar row is written as, or null when the row is not a
+  // scalar: a number respelled for YAML, a string quoted exactly when
+  // its plain form would read back as something else, an `ext_kind`'s
+  // lexeme as it stands. `flow` quotes a string a flow indicator would
+  // cut short.
+  scalarWord(row, flow) {
     const k = row.kind;
-    if (row.ext_kind !== undefined) this.put(row.ext_kind === "enum_literal" ? scalarText(row.text) : row.text);
-    else if (k === "string") this.put(scalarText(row.text));
-    else if (k === "null") this.put("null");
-    else if (k === "bool") this.put(row.text);
-    else if (k === "int" || k === "float") this.put(numberText(row.text));
-    else if (k === "alias") this.put("*", row.text, " ");
+    if (row.ext_kind !== undefined) return row.ext_kind === "enum_literal" ? scalarText(row.text) : row.text;
+    if (k === "null") return "null";
+    if (k === "bool") return row.text;
+    if (k === "int" || k === "float") return numberText(row.text);
+    if (k === "string") return flow ? flowScalarText(row.text) : scalarText(row.text);
+    return null;
+  }
+
+  scalarKey(row) {
+    const w = this.scalarWord(row);
+    if (w !== null) this.put(w);
+    else if (row.kind === "alias") this.put("*", row.text, " ");
   }
 
   keyLead(row) {
@@ -2755,10 +2423,8 @@ class Printer {
 
   flow(row) {
     const k = row.kind;
-    if (k === "null") this.put("null");
-    else if (k === "bool") this.put(row.text);
-    else if (k === "int" || k === "float") this.put(numberText(row.text));
-    else if (k === "string") this.put(flowScalarText(row.text));
+    const w = this.scalarWord(row, true);
+    if (w !== null) this.put(w);
     else if (k === "sequence") {
       if (row.items.length === 0) {
         this.put("[]");
@@ -2778,8 +2444,7 @@ class Printer {
       this.put("{ ");
       row.items.forEach((kv, i) => {
         if (i > 0) this.put(", ");
-        if (kv.key.kind === "string") this.put(flowScalarText(kv.key.text));
-        else this.scalarKey(kv.key);
+        this.put(this.scalarWord(kv.key, true));
         this.put(": ");
         this.flow(kv.value);
       });
@@ -2795,11 +2460,8 @@ class Printer {
   inlineValue(row) {
     this.props(row);
     const k = row.kind;
-    if (row.ext_kind !== undefined) this.put(row.ext_kind === "enum_literal" ? scalarText(row.text) : row.text);
-    else if (k === "null") this.put("null");
-    else if (k === "bool") this.put(row.text);
-    else if (k === "int" || k === "float") this.put(numberText(row.text));
-    else if (k === "string") this.put(scalarText(row.text));
+    const w = this.scalarWord(row);
+    if (w !== null) this.put(w);
     else if (k === "sequence") this.put(row.items.length === 0 ? "[]" : "[...]");
     else if (k === "mapping") this.put(row.items.length === 0 ? "{}" : "{...}");
     else if (k === "alias") this.put("*", row.text);
@@ -2948,12 +2610,8 @@ class Printer {
 
   node(row, depth) {
     const k = row.kind;
-    if (row.ext_kind !== undefined) {
-      this.put(row.ext_kind === "enum_literal" ? scalarText(row.text) : row.text, "\n");
-    } else if (k === "null") this.put("null\n");
-    else if (k === "bool") this.put(row.text, "\n");
-    else if (k === "int" || k === "float") this.put(numberText(row.text), "\n");
-    else if (k === "string") this.put(scalarText(row.text), "\n");
+    const w = this.scalarWord(row);
+    if (w !== null) this.put(w, "\n");
     else if (k === "sequence") this.sequence(row, depth);
     else if (k === "mapping") this.mapping(row, depth);
     else if (k === "keyvalue") this.keyValue(row, depth, false);
