@@ -47,10 +47,13 @@ elsewhere:
 - **grammar** — `G.sections`, what a format of header lines records alike ([`2bf1950`](https://github.com/diaryx-org/fig-quickjs/commit/2bf1950c90b198361048a8378b25498f0b0edea5))
 - **languages** — properties.mjs, the twin of fig's compiled `.properties` ([`1041c46`](https://github.com/diaryx-org/fig-quickjs/commit/1041c463a76a582587fdd1a1069128f98c517394))
 - **languages** — zon.mjs, the twin of fig's compiled ZON ([`95022c9`](https://github.com/diaryx-org/fig-quickjs/commit/95022c94d8d721f80a39f3dd1bff3d35dfeb4d77))
+- **languages** — json5.mjs, the twins of fig's compiled JSONC and JSON5 dialects ([`a4bec92`](https://github.com/diaryx-org/fig-quickjs/commit/a4bec92c9ee0b8e81476859984945fb7da828cc1))
+- **languages** — nestedtext.mjs, the twin of fig's compiled NestedText ([`666b271`](https://github.com/diaryx-org/fig-quickjs/commit/666b271e66e40e9677a93cb45a1bc57ec80139f8))
 
 ### Fixed
 
 - **engine** — give QuickJS a 16 MB stack, on a thread with twice that ([`e7d331b`](https://github.com/diaryx-org/fig-quickjs/commit/e7d331b2e6b05c4f8f5504b885da39b7cbb13200))
+- **languages** — json.mjs writes a number another format spelled as JSON reads it ([`b2b2798`](https://github.com/diaryx-org/fig-quickjs/commit/b2b2798bf0799d1552229b817ad303fc3ff0bbea))
 
 ### Changed
 
