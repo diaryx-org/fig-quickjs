@@ -54,6 +54,7 @@ elsewhere:
 - **languages** — nestedtext.mjs, the twin of fig's compiled NestedText ([`666b271`](https://github.com/diaryx-org/fig-quickjs/commit/666b271e66e40e9677a93cb45a1bc57ec80139f8))
 - **fig** — a table records its tag directives ([`7f8832f`](https://github.com/diaryx-org/fig-quickjs/commit/7f8832fa37c3885ff4cd1f0f76e3abe75e1d26d4))
 - **languages** — yaml.mjs, the twin of fig's compiled YAML ([`8cacfb7`](https://github.com/diaryx-org/fig-quickjs/commit/8cacfb7a34ab7207bcbd026b8315daac37833484))
+- **lib** — `fig/number`, `fig/datetime`, and the helpers the twins share ([`27017c3`](https://github.com/diaryx-org/fig-quickjs/commit/27017c338de3cc815e8ca7f77bf7c650a678b2c3))
 
 ### Fixed
 
@@ -63,6 +64,13 @@ elsewhere:
 ### Changed
 
 - **languages** — rebase ini, toml and fig on `G.sections` ([`f42e12f`](https://github.com/diaryx-org/fig-quickjs/commit/f42e12fb30476bf01f101f463a483a57ef8f0b2c))
+- **languages** — nestedtext.mjs held to the format, not the compiled parser ([`4be62c2`](https://github.com/diaryx-org/fig-quickjs/commit/4be62c26360c5afcb7b5dce7880c26f7b0423051))
+- **languages** — fig, json, canonical and plist take the shared helpers ([`3f1f63b`](https://github.com/diaryx-org/fig-quickjs/commit/3f1f63b5317c0518c819760390e547a27aaa32d6))
+- **languages** — ini and properties as grammars; dotenv trimmed ([`6d33bf6`](https://github.com/diaryx-org/fig-quickjs/commit/6d33bf6ae12838febae2491089e46b1f245183c3))
+- **languages** — json5.mjs as a grammar ([`f7d8449`](https://github.com/diaryx-org/fig-quickjs/commit/f7d84494f38ccdcae925f968ccf6689828e81f9a))
+- **languages** — toml.mjs held to the format, not the compiled parser ([`003136c`](https://github.com/diaryx-org/fig-quickjs/commit/003136cb7eb2314745e70a6af18a35afb12ca50d))
+- **languages** — zon.mjs as a grammar over the format, not a port of Zig's parser ([`4698fef`](https://github.com/diaryx-org/fig-quickjs/commit/4698fef5b1e9108c436448a91d4ec425298143a2))
+- **languages** — yaml.mjs held to the format, not the compiled parser ([`e88fc28`](https://github.com/diaryx-org/fig-quickjs/commit/e88fc280b02c99cd8dcf295e0be6cbef0f4b0864))
 
 ### Uncategorised — triage before release
 
@@ -73,5 +81,10 @@ elsewhere:
 - a module whose parse recursed past ~256 KB of stack
 used to be refused with "Maximum call stack size exceeded"; it now
 parses, up to 16 MB.
+
+- a `\x`, `\u` or `\U` escape in a double-quoted
+scalar now takes exactly its hex digits; `"\u0_41"` and `"\u+041"`, which
+the compiled parser's parseInt accepted, are refused as YAML refuses
+them.
 
 <!-- git-cliff:end -->
