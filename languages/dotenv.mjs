@@ -1,11 +1,7 @@
 // dotenv, in JavaScript: the twin of fig's compiled `dotenv` format, row
 // for row.
 //
-// `fig lang check js-dotenv --against dotenv <files…>` holds this module to
-// the compiled parser's node table on every file given, and this module is
-// written against `fig lang table -i dotenv`, which prints that table. What
-// the compiled format accepts is stated in fig's `src/languages/dotenv/`,
-// and this follows it line for line:
+// The format:
 //
 //   * a key is a bash identifier, `[A-Za-z_][A-Za-z0-9_]*`; an `export `
 //     before one is recognized and discarded;
@@ -21,46 +17,28 @@
 //     value; the later key's own leading comments go with it.
 //
 // Every value is a string: dotenv has no typed scalars and does no `$VAR`
-// interpolation. Spans are byte offsets, 0-based, `[start, end)`.
-//
-// The grammar refuses what the compiled parser refuses, in its words and at
-// its offsets, with two differences. The compiled tokenizer runs over the
-// whole file before its parser, so on a file with two errors it may report
-// the later one when that is the tokenizer's; this reports the first. And
-// its `InvalidUtf8` refusal cannot arise here: the input reaches a language
-// as text the host already decoded.
+// interpolation. The node table is held row for row against the compiled
+// format — `fig lang table -i dotenv` prints that table, and `fig lang
+// check js-dotenv --against dotenv <files…>` compares them file by file.
+// Every document the compiled format refuses is refused here, in this
+// module's own words and at its own offsets: the contract is the format,
+// not the parser. Spans are byte offsets, 0-based, `[start, end)`.
 import * as fig from "fig";
 import * as G from "fig/grammar";
 
-// ── errors, as the compiled parser words them ─────────────────────────────
-
-const MESSAGES = {
-  UnexpectedToken: "unexpected content here; expected `KEY=value` (optionally `export KEY=value`)",
-  MissingEquals: "expected `=` after this key; every dotenv line is `KEY=value`",
-  BadEscape:
-    "invalid escape in a double-quoted value; supported: \\n \\t \\r \\\\ \\\" — use a single-quoted value for raw text with backslashes",
-  UnexpectedCarriageReturn: "a bare `\\r` must be followed by `\\n`; line endings must be `\\n` or `\\r\\n`",
-  UnclosedString: "unclosed quoted value; expected a matching `\"`/`'` before the end of the file",
-  UnexpectedChar: "not a valid key here; a dotenv key is a bash identifier (`[A-Za-z_][A-Za-z0-9_]*`)",
-  TrailingContent: "unexpected content after this quoted value; only a `#` comment may follow it on the same line",
-};
-
 // ── the grammar ───────────────────────────────────────────────────────────
 
-// A bare `\r` is refused wherever the compiled tokenizer meets one.
-const bareCr = G.failIf(G.lit("\r"), MESSAGES.UnexpectedCarriageReturn);
+const BARE_CR = "a bare `\\r` must be followed by `\\n`; line endings must be `\\n` or `\\r\\n`";
+const UNCLOSED = 'unclosed quoted value; expected a matching `"`/`\'` before the end of the file';
 
-// After a closing quote only spaces, a comment or the line's end may
-// follow. Answers where a bad escape in the value is reported: at the
-// comment's text or the line end, as the compiled parser does.
+// Only spaces, a `#` comment or the line's end may follow a closing quote.
 function afterQuoted(sc) {
   const save = sc.pos;
   sc.hs();
-  let at = sc.pos;
-  if (sc.starts("#")) at += 1;
-  else if (!(sc.eof() || sc.starts("\n") || sc.starts("\r"))) sc.fail(MESSAGES.TrailingContent);
+  if (!(sc.eof() || sc.starts("#") || sc.starts("\n") || sc.starts("\r"))) {
+    sc.fail("unexpected content after this quoted value; only a `#` comment may follow it on the same line");
+  }
   sc.pos = save;
-  return at;
 }
 
 const ESCAPES = { n: "\n", t: "\t", r: "\r", "\\": "\\", '"': '"' };
@@ -69,17 +47,13 @@ const value = G.choice([
   G.quoted({
     open: '"',
     escapes: ESCAPES,
-    unclosed: MESSAGES.UnclosedString,
-    badEscape: MESSAGES.BadEscape,
-    bareCr: MESSAGES.UnexpectedCarriageReturn,
+    unclosed: UNCLOSED,
+    badEscape:
+      'invalid escape in a double-quoted value; supported: \\n \\t \\r \\\\ \\" — use a single-quoted value for raw text with backslashes',
+    bareCr: BARE_CR,
     after: afterQuoted,
   }),
-  G.quoted({
-    open: "'",
-    unclosed: MESSAGES.UnclosedString,
-    bareCr: MESSAGES.UnexpectedCarriageReturn,
-    after: afterQuoted,
-  }),
+  G.quoted({ open: "'", unclosed: UNCLOSED, bareCr: BARE_CR, after: afterQuoted }),
   // Unquoted: to the line's end, or to a `#` that a space or tab precedes —
   // the one right after `=` counts, since `A= #c` is empty.
   G.bare({
@@ -97,7 +71,7 @@ const entry = G.entry({
   key: G.key(G.pat(/[A-Za-z_][A-Za-z0-9_]*/)),
   sep: G.lit("="),
   value,
-  missingSep: MESSAGES.MissingEquals,
+  missingSep: "expected `=` after this key; every dotenv line is `KEY=value`",
 });
 
 const parse = G.document({
@@ -106,14 +80,13 @@ const parse = G.document({
     whole: true,
     entry,
     trivia: G.trivia({
-      space: G.choice([G.hs1, G.eol, bareCr]),
+      space: G.choice([G.hs1, G.eol, G.failIf(G.lit("\r"), BARE_CR)]),
       comment: G.comment("#"),
     }),
-    // Where a key should be: `=` is a token the compiled parser refuses;
-    // anything else is a byte its tokenizer refuses.
+    // Where a key should be.
     otherwise: (sc) => {
-      if (sc.starts("=")) sc.fail(MESSAGES.UnexpectedToken);
-      sc.fail(MESSAGES.UnexpectedChar);
+      if (sc.starts("=")) sc.fail("unexpected content here; expected `KEY=value` (optionally `export KEY=value`)");
+      sc.fail("not a valid key here; a dotenv key is a bash identifier (`[A-Za-z_][A-Za-z0-9_]*`)");
     },
   }),
 });
@@ -156,13 +129,6 @@ function writeValue(w, row) {
   }
 }
 
-function commentLines(w, c) {
-  for (const line of c.text.split("\n")) {
-    const trimmed = line.replace(/^[ \t]+|[ \t]+$/g, "");
-    w.put(trimmed === "" ? "#\n" : "# " + trimmed + "\n");
-  }
-}
-
 function print(_dialect, t, _options) {
   fig.index(t);
   const w = fig.writer();
@@ -178,7 +144,7 @@ function print(_dialect, t, _options) {
     if (!isIdentifier(key.text ?? "")) {
       throw new Error("`" + (key.text ?? "") + "` is not a dotenv key; a key is a bash identifier");
     }
-    for (const c of key.leading) commentLines(w, c);
+    w.comments(key.leading, "#");
     w.put(key.text, "=");
     writeValue(w, value);
     const trailing = value.trailing[0];
@@ -188,7 +154,7 @@ function print(_dialect, t, _options) {
     }
     w.put("\n");
   }
-  for (const c of root.dangling) commentLines(w, c);
+  w.comments(root.dangling, "#");
   return w.string();
 }
 

@@ -1,12 +1,8 @@
 // Java `.properties`, in JavaScript: the twin of fig's compiled
 // `properties` format, row for row.
 //
-// `fig lang check js-properties --against properties <files…>` holds this
-// module to the compiled parser's node table on every file given, and this
-// module is written against `fig lang table -i properties`, which prints
-// that table. What the compiled format accepts is stated in fig's
-// `src/languages/properties/`, and this follows it — `java.util.Properties
-// .load` as documented, not INI or dotenv re-skinned:
+// The format — `java.util.Properties.load` as documented, not INI or
+// dotenv re-skinned:
 //
 //   * a logical line is `key`, then the first unescaped `=`, `:` or run of
 //     spaces and tabs, then the value to the line's end; `a=b`, `a:b`,
@@ -23,197 +19,117 @@
 //   * a repeated key keeps the first entry's place and takes the last
 //     value; the later key's own leading comments go with it.
 //
-// Every value is a string: the format has no typed scalars. Spans are byte
-// offsets, 0-based, `[start, end)`. The refusals are the compiled parser's,
-// in its words and at its offsets: a bad `\uXXXX` is reported where the
-// token after the offending one begins, as the compiled parser decodes a
-// token once it has moved past it. The one warning (a duplicate key) has
-// no row and is not carried. There is no UTF-8 refusal: the input reaches
-// a module as text the host already decoded.
+// Every value is a string: the format has no typed scalars. The node table
+// is held row for row against the compiled format — `fig lang table -i
+// properties` prints that table, and `fig lang check js-properties
+// --against properties <files…>` compares them file by file. Every
+// document the compiled format refuses is refused here, in this module's
+// own words and at its own offsets: the contract is the format, not the
+// parser. Spans are byte offsets, 0-based, `[start, end)`; a rule reads
+// the scanner's bytes, so `\uXXXX` decodes to UTF-8 and no offset is ever
+// a UTF-16 index.
 import * as fig from "fig";
+import * as G from "fig/grammar";
 
-// ── errors, as the compiled parser words them ─────────────────────────────
+// ── the grammar ───────────────────────────────────────────────────────────
+// A form feed counts as inline whitespace, and so as a separator.
 
-const MESSAGES = {
-  InvalidUnicode: "invalid \\uXXXX escape; expected exactly 4 hex digits forming a valid Unicode codepoint",
-  UnexpectedCarriageReturn: "a bare `\\r` must be followed by `\\n`; line endings must be `\\n` or `\\r\\n`",
-  UnclosedEscape: "a `\\` at the very end of the file has nothing to escape",
-};
+const hs = G.pat(/[ \t\f]*/);
+const hs1 = G.pat(/[ \t\f]+/);
 
-// ── the tokenizer ─────────────────────────────────────────────────────────
-// Tokens are `{ kind, s, e }` over 0-based byte offsets: `key`, `value`
-// (both raw, decoded by the parser; a value follows every key), `comment`
-// (the text after its leader), `newline`, `end_of_file`.
+const isSeparator = (c) => c === 61 || c === 58 || c === 32 || c === 9 || c === 12;
 
-const isInlineWs = (b) => b === 32 || b === 9 || b === 12;
-const isSeparator = (b) => b === 61 || b === 58 || isInlineWs(b);
-
-function tokenize(bin) {
-  const n = bin.length;
-  let i = 0;
-  const tokens = [];
-  const at = (k) => (k < n ? bin.charCodeAt(k) : undefined);
-  const emit = (kind, s, e) => tokens.push({ kind, s, e });
-
-  const skipContinuationWs = () => {
-    while (i < n && (at(i) === 32 || at(i) === 9)) i += 1;
-  };
-
-  // An escape-aware run: a `\` protects the byte after it, a `\` before a
-  // line ending joins the next line on. Stops before the first unescaped
-  // separator in `keyMode`, else at the logical line's end.
-  const scanEscaped = (keyMode) => {
+// An escape-aware run: a `\` protects the byte after it, and a `\` before a
+// line ending is a continuation — the run goes on into the next line, past
+// its leading spaces and tabs. In `keyMode` it stops before the first
+// unescaped separator, otherwise at the line's end. Always matches, and
+// may be empty: a value is zero-width where one would begin.
+function run(keyMode) {
+  return (sc) => {
+    const { bytes, n } = sc;
+    const s = sc.pos;
+    let i = s;
     while (i < n) {
-      const c = at(i);
-      if (c === 10 || c === 13) return;
+      const c = bytes[i];
+      if (c === 10 || c === 13) break;
       if (c === 92) {
-        if (i + 1 < n && at(i + 1) === 10) {
+        if (i + 1 >= n) fig.fail("a `\\` at the very end of the file has nothing to escape", i);
+        if (bytes[i + 1] === 10) i += 2;
+        else if (bytes[i + 1] === 13 && bytes[i + 2] === 10) i += 3;
+        else {
           i += 2;
-          skipContinuationWs();
-        } else if (i + 2 < n && at(i + 1) === 13 && at(i + 2) === 10) {
-          i += 3;
-          skipContinuationWs();
-        } else if (i + 1 >= n) {
-          fig.fail(MESSAGES.UnclosedEscape, i);
-        } else {
-          i += 2;
+          continue;
         }
+        while (i < n && (bytes[i] === 32 || bytes[i] === 9)) i += 1;
       } else if (keyMode && isSeparator(c)) {
-        return;
+        break;
       } else {
         i += 1;
       }
     }
+    sc.pos = i;
+    return [s, i];
   };
-
-  if (bin.startsWith("\xef\xbb\xbf")) i = 3;
-  while (i < n) {
-    while (i < n && isInlineWs(at(i))) i += 1;
-    if (i >= n) break;
-    const c = at(i);
-    if (c === 10) {
-      emit("newline", i, i + 1);
-      i += 1;
-    } else if (c === 13) {
-      if (i + 1 < n && at(i + 1) === 10) {
-        emit("newline", i, i + 2);
-        i += 2;
-      } else {
-        fig.fail(MESSAGES.UnexpectedCarriageReturn, i);
-      }
-    } else if (c === 35 || c === 33) {
-      i += 1;
-      const s = i;
-      while (i < n && at(i) !== 10 && at(i) !== 13) i += 1;
-      emit("comment", s, i);
-    } else {
-      const keyStart = i;
-      scanEscaped(true);
-      emit("key", keyStart, i);
-      while (i < n && isInlineWs(at(i))) i += 1;
-      if (i < n && (at(i) === 61 || at(i) === 58)) {
-        i += 1;
-        while (i < n && isInlineWs(at(i))) i += 1;
-      }
-      // Always a value: zero-width where one would begin when nothing
-      // follows.
-      const valueStart = i;
-      if (i < n && at(i) !== 10 && at(i) !== 13) scanEscaped(false);
-      emit("value", valueStart, i);
-    }
-  }
-  emit("end_of_file", n, n);
-  return tokens;
 }
-
-// ── decoding ──────────────────────────────────────────────────────────────
 
 const SIMPLE = { t: "\t", n: "\n", r: "\r", f: "\f" };
 
-// The text of a raw key or value token; `failAt` is where a bad `\uXXXX`
-// is reported.
-function decodeEscaped(raw, failAt) {
-  if (!raw.includes("\\")) return raw;
+// The text a run spells. Over the bytes, one char per byte, so a `\uXXXX`
+// becomes the UTF-8 it stands for and a refusal lands on the escape itself.
+function decode(sc, [s, e]) {
+  const bin = sc.binSlice(s, e);
   let out = "";
   let i = 0;
-  const n = raw.length;
-  while (i < n) {
-    const c = raw[i];
+  while (i < bin.length) {
+    const c = bin[i];
+    const next = bin[i + 1];
     if (c !== "\\") {
       out += c;
       i += 1;
-    } else if (raw[i + 1] === "\n") {
-      i += 2;
-      while (i < n && (raw[i] === " " || raw[i] === "\t")) i += 1;
-    } else if (raw[i + 1] === "\r" && raw[i + 2] === "\n") {
-      i += 3;
-      while (i < n && (raw[i] === " " || raw[i] === "\t")) i += 1;
-    } else {
-      const ch = raw[i + 1];
-      if (ch in SIMPLE) {
-        out += SIMPLE[ch];
-      } else if (ch === "u") {
-        const hex = raw.slice(i + 2, i + 6);
-        if (!/^[0-9A-Fa-f]{4}$/.test(hex)) fig.fail(MESSAGES.InvalidUnicode, failAt);
-        const cp = parseInt(hex, 16);
-        if (cp >= 0xd800 && cp <= 0xdfff) fig.fail(MESSAGES.InvalidUnicode, failAt);
-        out += String.fromCodePoint(cp);
-        i += 4;
-      } else {
-        out += ch;
+    } else if (next === "\n" || (next === "\r" && bin[i + 2] === "\n")) {
+      i += next === "\n" ? 2 : 3;
+      while (bin[i] === " " || bin[i] === "\t") i += 1;
+    } else if (next === "u") {
+      const hex = bin.slice(i + 2, i + 6);
+      const cp = /^[0-9A-Fa-f]{4}$/.test(hex) ? parseInt(hex, 16) : -1;
+      if (cp < 0 || fig.isSurrogate(cp)) {
+        fig.fail("invalid `\\u` escape; expected four hex digits spelling a character", s + i);
       }
+      for (const b of fig.utf8Bytes(cp)) out += String.fromCharCode(b);
+      i += 6;
+    } else {
+      out += SIMPLE[next] ?? next;
       i += 2;
     }
   }
-  return out;
+  return fig.fromBin(out);
 }
 
-// ── the parser ────────────────────────────────────────────────────────────
+const text = (raw, span, sc) => (raw.includes("\\") ? decode(sc, span) : raw);
 
-function parse(_dialect, input) {
-  const sc = fig.scanner(input);
-  const tokens = tokenize(sc.bin);
-  let pos = 0;
-  let pending = [];
-  const root = fig.mapping([0, sc.n]);
+const entry = G.entry({
+  key: G.key(run(true), { text }),
+  between: hs,
+  // Any run of inline whitespace separates; one `=` or `:` may join it.
+  sep: G.opt(G.pat(/[=:]/)),
+  value: G.scalar("string", run(false), { text }),
+});
 
-  const peek = () => tokens[pos];
-  const advance = () => {
-    const t = tokens[pos];
-    if (pos < tokens.length - 1) pos += 1;
-    return t;
-  };
-  const text = (t) => sc.slice(t.s, t.e);
-  const claim = (node, slot) => {
-    for (const c of pending) node.comment(slot, c);
-    pending = [];
-  };
-  const skipBlank = () => {
-    for (;;) {
-      const k = peek().kind;
-      if (k === "comment") {
-        pending.push(text(peek()).replace(/^[ \t\r]+|[ \t\r]+$/g, ""));
-        pos += 1;
-      } else if (k === "newline") {
-        pos += 1;
-      } else return;
-    }
-  };
-
-  skipBlank();
-  while (peek().kind !== "end_of_file") {
-    const keyTok = advance();
-    const name = decodeEscaped(text(keyTok), peek().s);
-    const valueTok = advance();
-    const valueText = decodeEscaped(text(valueTok), peek().s);
-    const key = fig.scalar("string", [keyTok.s, keyTok.e], name);
-    claim(key, "leading");
-    root.put(fig.entry(key, fig.scalar("string", [valueTok.s, valueTok.e], valueText)));
-    skipBlank();
-  }
-  claim(root, "dangling");
-  return fig.rows(root);
-}
+const parse = G.document({
+  bom: true,
+  root: G.map({
+    whole: true,
+    entry,
+    trivia: G.trivia({
+      space: G.choice([
+        hs1,
+        G.eol,
+        G.failIf(G.lit("\r"), "a bare `\\r` must be followed by `\\n`; line endings must be `\\n` or `\\r\\n`"),
+      ]),
+      comment: G.choice([G.comment("#"), G.comment("!")]),
+    }),
+  }),
+});
 
 // ── the printer ───────────────────────────────────────────────────────────
 // Canonical `.properties`, as the compiled printer writes it: one
@@ -253,16 +169,10 @@ function writeValue(w, row) {
   if (k === "string") writeValueText(w, row.text ?? "");
   else if (k === "int" || k === "float" || k === "bool") w.put(row.text ?? "");
   else if (k === "null") throw new Error("a .properties file has no null; a null value cannot be written");
-  else if (k === "sequence" || k === "mapping") throw new Error("a .properties file holds a flat map of strings; a nested value cannot be written");
+  else if (k === "sequence" || k === "mapping")
+    throw new Error("a .properties file holds a flat map of strings; a nested value cannot be written");
   else if (k === "alias") throw new Error("an alias must be resolved before it is written as .properties");
   else throw new Error("a " + k + " is not a value");
-}
-
-function commentLines(w, c) {
-  for (const line of c.text.split("\n")) {
-    const trimmed = line.replace(/^[ \t]+|[ \t]+$/g, "");
-    w.put(trimmed === "" ? "#\n" : "# " + trimmed + "\n");
-  }
 }
 
 function print(_dialect, t, _options) {
@@ -277,13 +187,13 @@ function print(_dialect, t, _options) {
   for (const kv of root.items) {
     const { key, value } = kv;
     if (key.kind !== "string") throw new Error("a .properties key must be a string");
-    for (const c of key.leading) commentLines(w, c);
+    w.comments(key.leading, "#");
     writeKey(w, key.text ?? "");
     w.put("=");
     writeValue(w, value);
     w.put("\n");
   }
-  for (const c of root.dangling) commentLines(w, c);
+  w.comments(root.dangling, "#");
   return w.string();
 }
 
