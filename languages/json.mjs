@@ -254,12 +254,65 @@ function quote(s) {
   );
 }
 
+// Whether strict JSON reads `raw` back as the same number: a plain
+// decimal — no radix, no `_`, no `+`, no bare dot, no leading zero.
+function jsonSpellable(raw) {
+  const body = raw[0] === "-" ? raw.slice(1) : raw;
+  if (body === "" || raw[0] === "+" || body.includes("_")) return false;
+  if (/^0[xXoObB]/.test(body)) return false;
+  if (body[0] === "." || body[body.length - 1] === ".") return false;
+  const m = body.search(/[.eE]/);
+  const intEnd = m < 0 ? body.length : m;
+  if (intEnd > 1 && body[0] === "0") return false;
+  return true;
+}
+
+// `raw` as a decimal lexeme, as the compiled printer canonicalizes a
+// number another format spelled: radix converted, `_` and `+` dropped,
+// bare dots padded, leading zeros stripped.
+function canonicalNumber(raw) {
+  let out = "";
+  let s = raw;
+  if (s[0] === "-") {
+    out += "-";
+    s = s.slice(1);
+  } else if (s[0] === "+") {
+    s = s.slice(1);
+  }
+  const radix = /^0([xXoObB])/.exec(s);
+  if (radix) {
+    const base = { x: 16, o: 8, b: 2 }[radix[1].toLowerCase()];
+    const digits = s.slice(2).replace(/_/g, "");
+    const valid = { 16: /^[0-9a-fA-F]+$/, 8: /^[0-7]+$/, 2: /^[01]+$/ }[base];
+    if (!valid.test(digits)) return out + s;
+    let v = 0n;
+    for (const d of digits) v = v * BigInt(base) + BigInt(parseInt(d, base));
+    return out + v.toString();
+  }
+  const eIdx = s.search(/[eE]/);
+  const mantissa = eIdx < 0 ? s : s.slice(0, eIdx);
+  const exponent = eIdx < 0 ? "" : s.slice(eIdx);
+  const dot = mantissa.indexOf(".");
+  const intDigits = (dot < 0 ? mantissa : mantissa.slice(0, dot)).replace(/_/g, "").replace(/^0+/, "");
+  out += intDigits === "" ? "0" : intDigits;
+  if (dot >= 0) {
+    const frac = mantissa.slice(dot + 1).replace(/_/g, "");
+    out += "." + (frac === "" ? "0" : frac);
+  }
+  return out + exponent.replace(/_/g, "");
+}
+
 function writeNode(w, row, depth) {
   const k = row.kind;
   if (k === "null") {
     w.put("null");
-  } else if (k === "bool" || k === "int" || k === "float") {
+  } else if (k === "bool") {
     w.put(row.text);
+  } else if (k === "int" || k === "float") {
+    // A number parsed here is its own lexeme; one from another format's
+    // tree (`0xff`, `1_000`) is written as JSON reads it.
+    const raw = row.text ?? "";
+    w.put(jsonSpellable(raw) ? raw : canonicalNumber(raw));
   } else if (k === "string") {
     w.put(quote(row.text ?? ""));
   } else if (k === "sequence" || k === "mapping") {
