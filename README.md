@@ -33,9 +33,12 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Three modules ship in `languages/`, each the twin of a format fig compiles
+Four modules ship in `languages/`, each the twin of a format fig compiles
 in and held to it row for row:
 
+- `json.mjs` — strict JSON, RFC 8259: the values, the escapes with
+  surrogate pairs, the byte-order mark, no comments; the format everyone
+  already knows, so the one to read first.
 - `dotenv.mjs` — `.env` files: bash-identifier keys, an optional `export`,
   quoted and unquoted values, `#` comments, flat.
 - `plist.mjs` — Apple property lists, the XML form: `dict`, `array`, typed
