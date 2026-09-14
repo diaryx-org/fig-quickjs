@@ -1,0 +1,22 @@
+/* leading */
+{
+	bare = "a-b.c/d:e_f$g";
+	quoted = "with space";
+	escapes = "q\"b\\n\ttAé";
+	empty = "";
+	list = (
+	);
+	nested = (
+		(
+			1,
+			2,
+		),
+		{
+			a = b;
+		},
+	);
+	data = <>;
+	dict = {
+	};
+	dup = 2;
+}

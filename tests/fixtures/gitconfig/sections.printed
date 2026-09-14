@@ -1,0 +1,14 @@
+[remote]
+	pushDefault = origin
+
+[remote "origin"]
+	url = a
+	fetch = x
+
+[remote "up stream \"q\""]
+	url = b
+
+[branch "main"]
+	remote = origin
+
+[empty]

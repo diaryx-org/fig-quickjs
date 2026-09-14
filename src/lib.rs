@@ -127,9 +127,12 @@ pub mod module {
     //! `languages/yaml.mjs`, `languages/dotenv.mjs`,
     //! `languages/properties.mjs`, `languages/nestedtext.mjs`,
     //! `languages/plist.mjs` and
-    //! `languages/canonical.mjs` in this repository are complete modules;
-    //! `js/fig.js`, `js/grammar.js` and `js/xml.js` are the modules they
-    //! import.
+    //! `languages/canonical.mjs` in this repository are complete modules,
+    //! each the twin of a format fig compiles in; `languages/gitconfig.mjs`,
+    //! `languages/sshconfig.mjs`, `languages/openstep.mjs`,
+    //! `languages/pom.mjs` and `languages/hcl.mjs` are formats fig does not
+    //! compile in at all; `js/fig.js`, `js/grammar.js` and `js/xml.js` are
+    //! the modules they import.
 }
 
 /// A format whose parser and printer are an ES module.

@@ -1,0 +1,7 @@
+Host a # first
+  HostName a.example.com
+Host b
+Match host a exec "test -f x"
+  User me
+Host a
+  Port 22

@@ -1,0 +1,38 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1 /* Foo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2 /* Foo.swift */; };
+/* End PBXBuildFile section */
+
+		C3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1 /* Foo.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_KEY_CFBundleDisplayName = "My App";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.app;
+				SWIFT_VERSION = 5.0;
+				ESC = "tab\there \"q\" \U00e9 \101";
+				blob = <0fb3 41 42>;
+			};
+			name = Debug;
+		};
+	};
+	rootObject = E5 /* Project object */;
+}

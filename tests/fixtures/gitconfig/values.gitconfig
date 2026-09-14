@@ -1,0 +1,9 @@
+[alias]
+	a = "quoted \"inner\" \\ \t\n"
+	b = spaced   out   value
+	c = "keep  spaces" and more
+	d =
+	e = one \
+	    two
+	f = has#hash ; then comment
+	g = "#not a comment"

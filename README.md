@@ -33,7 +33,7 @@ through this binary. What differs is the start-up: a QuickJS helper answers
 in a few milliseconds where Node takes fifty, which is what a helper the
 CLI spawns per invocation is measured by.
 
-Eleven modules ship in `languages/`, each the twin of a format fig compiles
+Twelve modules in `languages/` are each the twin of a format fig compiles
 in. The format and the tree are the contract: a twin produces the same
 node table as the compiled format — every row, span, text and comment,
 `tests/fixtures/<format>/*.table.json` beside each fixture — and refuses
@@ -107,6 +107,44 @@ parser and printer, and `fig lang check <name> --against <format>` is how a
 twin is proven — the table, row for row. What a twin says when it refuses
 a document is not compared; `fig lang table -i <format>` prints what the
 table has to be.
+
+Five more are formats fig does not compile in at all — the reason a
+runtime language exists. Each is written to its own specification, reads
+the whole format, and says in its header exactly which edits the generic
+engine makes on it and which it refuses, because the tree fig holds is
+values and these formats hold a little more than that. What each recorded
+of itself — the table and the print of every fixture under
+`tests/fixtures/<name>/` — is what `tests/languages.rs` holds it to.
+
+- `gitconfig.mjs` — git's configuration files, as git-config(1) reads
+  them: `[section]` and `[section "subsection"]` headers, quoted values
+  with git's escapes, `\`-continued lines, a bare name as `true`,
+  multivalued variables kept as the entries they are. A section format
+  with regions and mentions, edited like INI.
+- `sshconfig.mjs` — OpenSSH client configuration: `Keyword arguments`
+  lines, `Host` and `Match` blocks as mappings under those two names,
+  arguments kept as written since `"a b"` is one and `a b` is two. A new
+  block is `insertContainer`, spelled `Host name`.
+- `openstep.mjs` — the OpenStep property list, Xcode's `project.pbxproj`
+  and `Localizable.strings`: `{ k = v; }`, `( a, b, )`, `<hex>` data as
+  the XML twin's `plist_data`, every scalar a string, `/* */` comments
+  trailing keys and values inline where Xcode puts them. Prints an Xcode
+  project back byte for byte, one-line `PBXBuildFile` objects and section
+  markers included.
+- `pom.xml` (`pom.mjs`) — a Maven POM, and any XML shaped like one:
+  text elements as strings, element-holding elements as mappings, a run of
+  same-named children as a sequence whose item name rides its tag,
+  attributes as `@name` entries, the root's name as the root's tag. The
+  answer to "which elements are a list" that fig's retired generic XML
+  never had. Comments kept; mixed content refused.
+- `hcl.mjs` — HCL's native syntax, Terraform's `.tf` and `.tfvars`:
+  attributes and blocks nested `type → label → … → body` as `hcl2json`
+  nests them, repeated blocks a sequence, literals and tuples and objects
+  as values, every expression — a reference, a call, a conditional, a
+  `for` — kept as its text under an `!expr` tag and written back
+  unchanged, heredocs and templates likewise. A section format: a block
+  is a container the engine never line-splices, and deleting one is the
+  container op.
 
 ## Install
 

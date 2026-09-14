@@ -1,0 +1,21 @@
+# global defaults
+AddKeysToAgent yes
+IgnoreUnknown UseKeychain
+
+Host github
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/id_rsa # fallback
+    Compression yes
+
+Host "my box" bastion
+    HostName 10.0.0.1
+    ProxyCommand ssh -W %h:%p jump # via jump
+    LocalForward 8080 localhost:80
+
+Host *
+    ServerAliveInterval 60
+
+Match host github user git
+    ForwardAgent no

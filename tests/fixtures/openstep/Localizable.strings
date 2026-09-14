@@ -1,0 +1,4 @@
+/* Localizable */
+"hello" = Hallo;
+"bye" = "Goodbye"; // farewell
+hi = "Hi there";

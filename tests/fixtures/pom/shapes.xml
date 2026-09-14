@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!DOCTYPE thing>
+<root a="1" b="two &amp; three">
+  <text attr="x">hello</text>
+  <list><item>1</item></list>
+  <args><arg>a</arg><arg>b</arg><arg>c</arg></args>
+  <mixedNames><a>1</a><b>2</b><a>3</a></mixedNames>
+  <compilerArgs><arg>-X</arg></compilerArgs>
+  <empty></empty>
+  <selfClosed/>
+  <padded>  spaced  </padded>
+  <cdata><![CDATA[<raw> & stuff]]></cdata>
+  <ent>a &lt; b &#x41; &#66;</ent>
+  <?pi ignored?>
+  <!-- dangling -->
+</root>

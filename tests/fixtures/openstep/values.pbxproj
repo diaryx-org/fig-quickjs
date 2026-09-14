@@ -1,0 +1,12 @@
+/* leading */ {
+	bare = a-b.c/d:e_f$g;
+	quoted = "with space";
+	escapes = "q\"b\\n\tt\101\U00e9";
+	empty = "";
+	list = ();
+	nested = ( ( 1, 2 ), { a = b; } );
+	data = <>;
+	dict = {};
+	dup = 1;
+	dup = 2;
+}

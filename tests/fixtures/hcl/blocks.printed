@@ -1,0 +1,35 @@
+# one-line
+empty {}
+
+one {
+  a = 1
+}
+
+labeled "x" {}
+
+labeled "x" {
+  n = 2
+}
+
+labeled "y" {
+  n = 1
+}
+
+deep "a" "b" "c" {
+  v = 1
+}
+
+deep "a" "b" "d" {
+  v = 2
+}
+
+nested {
+  attr = 1 # trailing block
+
+  inner {
+    leaf = true
+  }
+
+  # after inner
+  inner {}
+} # after close

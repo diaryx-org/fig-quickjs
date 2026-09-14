@@ -1,0 +1,5 @@
+# only globals
+Include ~/.ssh/config.d/*
+AddKeysToAgent yes
+IdentityFile "~/.ssh/my key"
+Compression yes

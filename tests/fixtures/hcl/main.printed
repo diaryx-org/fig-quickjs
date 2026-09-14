@@ -1,0 +1,65 @@
+# The provider
+terraform {
+  required_version = ">= 1.5"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.region # primary
+}
+
+variable "region" {
+  type    = string
+  default = "us-east-1"
+}
+
+locals {
+  name    = "${var.project}-${terraform.workspace}"
+  count   = 3 * 2
+  enabled = true
+  ports   = [80, 443]
+  tags = {
+    Name = "web"
+    Env  = local.env
+  }
+  script = <<-EOT
+    #!/bin/sh
+    echo "hi"
+  EOT
+  ids     = [for s in var.subnets : s.id]
+  cond    = var.x ? 1 : 2
+  neg     = -1.5e3
+  fn      = lookup(var.map, "k", "default")
+  literal = "cost: $${amount}"
+}
+
+resource "aws_instance" "web" {
+  ami           = data.aws_ami.ubuntu.id
+  instance_type = "t3.micro" # small
+  tags          = local.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  # two ingress rules
+  ingress {
+    from_port = 80
+  }
+
+  ingress {
+    from_port = 443
+  }
+}
+
+resource "aws_instance" "db" {}
+
+resource "aws_s3_bucket" "logs" {
+  bucket = "logs"
+}

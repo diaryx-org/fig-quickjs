@@ -1,0 +1,21 @@
+# global
+[core]
+	bare = false
+	editor = vim -f # with a comment
+	autocrlf
+	ignorecase = true
+
+[user]
+	name = Adam Harris
+	email = amh421@icloud.com
+
+[remote "origin"]
+	url = git@github.com:diaryx-org/fig.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+	fetch = +refs/pull/*/head:refs/remotes/origin/pr/*
+
+[remote "upstream"]
+	url = x
+
+[alias]
+	lg = "log --oneline \t    --graph"

@@ -1,0 +1,7 @@
+# leading
+# two
+[core] # on the header
+# before bare
+	bare = false # after
+	ignorecase
+# dangles at the end
