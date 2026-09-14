@@ -55,6 +55,7 @@ elsewhere:
 - **fig** — a table records its tag directives ([`7f8832f`](https://github.com/diaryx-org/fig-quickjs/commit/7f8832fa37c3885ff4cd1f0f76e3abe75e1d26d4))
 - **languages** — yaml.mjs, the twin of fig's compiled YAML ([`8cacfb7`](https://github.com/diaryx-org/fig-quickjs/commit/8cacfb7a34ab7207bcbd026b8315daac37833484))
 - **lib** — `fig/number`, `fig/datetime`, and the helpers the twins share ([`27017c3`](https://github.com/diaryx-org/fig-quickjs/commit/27017c338de3cc815e8ca7f77bf7c650a678b2c3))
+- **languages** — git config, ssh_config, OpenStep plist, pom.xml and HCL ([`479c79e`](https://github.com/diaryx-org/fig-quickjs/commit/479c79e0a0f8ee5ce6e2e3aa1a6928d9165cbc27))
 
 ### Fixed
 
