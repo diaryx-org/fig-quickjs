@@ -379,3 +379,105 @@ fn nestedtext_root_tail_takes_a_nested_block_as_it_stands() {
     assert_eq!(tail("\n- a"), "- a");
     assert_eq!(tail("hi\n\nthere"), "> hi\n>\n> there");
 }
+
+// ── formats fig does not compile in ──────────────────────────────────────
+// No compiled sibling to hold them to: what each splices is what its own
+// printer writes for the value where it stands.
+
+fn registered(name: &str) -> Format {
+    fig::language::register(module(name)).expect("registers")[0]
+}
+
+fn js_openstep() -> Format {
+    static FORMAT: OnceLock<Format> = OnceLock::new();
+    *FORMAT.get_or_init(|| registered("openstep.mjs"))
+}
+
+fn js_pom() -> Format {
+    static FORMAT: OnceLock<Format> = OnceLock::new();
+    *FORMAT.get_or_init(|| registered("pom.mjs"))
+}
+
+fn js_hcl() -> Format {
+    static FORMAT: OnceLock<Format> = OnceLock::new();
+    *FORMAT.get_or_init(|| registered("hcl.mjs"))
+}
+
+#[test]
+fn openstep_splices_a_container_under_the_members_indent() {
+    // No splice answer: a document is its root value, spelled as it is in
+    // place. What the renderers add is the member's indent on every line
+    // after the first.
+    let src = b"{\n\tobjects = {\n\t\tC3 = {\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\ta,\n\t\t\t);\n\t\t};\n\t};\n}\n";
+    let mut ed = Editor::open(src, js_openstep()).unwrap();
+    let m = map(vec![("a", s("1")), ("l", Value::Seq(vec![s("x")]))]);
+    ed.insert_value(&[key("objects"), key("C3")], "m", m)
+        .unwrap();
+    ed.append_value(
+        &[key("objects"), key("C3"), key("children")],
+        map(vec![("k", s("v"))]),
+    )
+    .unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "{\n\tobjects = {\n\t\tC3 = {\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t\ta,\n\t\t\t\t{\n\t\t\t\t\tk = v;\n\t\t\t\t},\n\t\t\t);\n\t\t\tm = {\n\t\t\t\ta = 1;\n\t\t\t\tl = (\n\t\t\t\t\tx,\n\t\t\t\t);\n\t\t\t};\n\t\t};\n\t};\n}\n"
+    );
+}
+
+#[test]
+fn pom_splices_a_container_as_its_content_and_refuses_what_content_cannot_say() {
+    // The document wraps its root in a declaration and a root element;
+    // splice text is what stands between an element's tags.
+    let src = b"<?xml version=\"1.0\"?>\n<project>\n  <name>a</name>\n  <props>\n    <x>1</x>\n  </props>\n</project>\n";
+    let mut ed = Editor::open(src, js_pom()).unwrap();
+    ed.insert_value(&[key("props")], "y", "2 < 3").unwrap();
+    let m = map(vec![("q", s("3")), ("r", s("4"))]);
+    ed.insert_value(&[key("props")], "m", m).unwrap();
+    ed.insert_value(&[], "e", Value::Map(vec![])).unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "<?xml version=\"1.0\"?>\n<project>\n  <name>a</name>\n  <props>\n    <x>1</x>\n    <y>2 &lt; 3</y>\n    <m>\n      <q>3</q>\n      <r>4</r>\n    </m>\n  </props>\n  <e></e>\n</project>\n"
+    );
+    // A list's items need the list's item name, and an attribute belongs
+    // to the opening tag: neither is content.
+    assert!(
+        ed.insert_value(&[], "deps", Value::Seq(vec![s("a")]))
+            .is_err()
+    );
+    assert!(
+        ed.insert_value(&[], "a", map(vec![("@id", s("1"))]))
+            .is_err()
+    );
+    // A whole document still has its declaration and root element.
+    let doc = map(vec![("name", s("b"))]).serialize(js_pom()).unwrap();
+    assert!(doc.starts_with("<?xml"), "{doc}");
+    assert!(doc.contains("<project>"), "{doc}");
+}
+
+#[test]
+fn hcl_splices_a_container_as_a_one_line_value() {
+    // A document's root mapping is a body with no braces; a mapping in
+    // place is an object, and a raw splice takes no line break.
+    let mut ed = Editor::open(b"a = 1\nb = {\n  c = 2\n}\n", js_hcl()).unwrap();
+    let m = map(vec![
+        ("q", Value::Int(3)),
+        ("has space", Value::Seq(vec![s("x"), Value::Map(vec![])])),
+    ]);
+    ed.insert_value(&[], "m", m.clone()).unwrap();
+    ed.replace_value(&[key("b")], map(vec![("z", s("9"))]))
+        .unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a = 1\nb = { z = \"9\" }\nm = { q = 3, \"has space\" = [\"x\", {}] }\n"
+    );
+    let back = Document::parse(ed.source().unwrap().as_bytes(), js_hcl())
+        .unwrap()
+        .to_value()
+        .unwrap();
+    assert_eq!(back.get("m"), Some(&m));
+    // A whole document is still a body.
+    assert_eq!(
+        map(vec![("k", s("v"))]).serialize(js_hcl()).unwrap(),
+        "k = \"v\"\n"
+    );
+}

@@ -47,7 +47,8 @@
 // lands after that level's last block, where `terraform validate` will
 // refuse it. A value `set` writes is text, quoted; a tuple, an object, a
 // quoted string or a heredoc is spliced as written; an expression is not
-// something `set` writes.
+// something `set` writes. A value a binding hands the editor is printed on
+// one line (`options.splice`): an object `{ k = v, … }`, a tuple `[a, b]`.
 // The same object `@diaryx/fig`'s `registerLanguage` takes, so it serves
 // the browser and Node unchanged.
 import * as fig from "fig";
@@ -756,10 +757,31 @@ function writeBody(w, m, depth) {
   writeComments(w, m.dangling, depth);
 }
 
-function print(_dialect, t, _options) {
+// A value on one line: an object `{ k = v, … }`, a tuple `[a, b]`, a
+// scalar as `writeValue` spells it. Splice text is this, whatever the
+// width: the dialect splices raw, and a raw splice takes no line break.
+function inlineValue(row) {
+  if (row.kind === "mapping") {
+    if (row.items.length === 0) return "{}";
+    const entries = row.items.map((e) => {
+      if (e.key.kind !== "string") throw new Error("an attribute name must be a string");
+      return spellKey(e.key.text ?? "") + " = " + inlineValue(e.value);
+    });
+    return "{ " + entries.join(", ") + " }";
+  }
+  if (row.kind === "sequence") return "[" + row.items.map(inlineValue).join(", ") + "]";
+  const w = fig.writer();
+  writeValue(w, row, 0);
+  return w.string();
+}
+
+function print(_dialect, t, options) {
   fig.index(t);
   const root = t.byid(0);
   const w = fig.writer();
+  // Splice text: the value as it stands after `name = `, where a
+  // document's root mapping is a body with no braces.
+  if (options?.splice) return inlineValue(root);
   if (root.kind !== "mapping") {
     // A fragment: the value as it stands in an attribute.
     writeValue(w, root, 0);

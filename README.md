@@ -300,9 +300,9 @@ table whose root is a scalar is a fragment: spell it as the scalar stands
 alone. `options.splice` is `true` when fig wants the value as the editor
 splices it into a document — every value a binding's editor hands it —
 rather than as a document of its own: a format whose document wraps its
-root (`plist.mjs`) or spells a root differently from the same value in
-place (`nestedtext.mjs`) writes it as it stands in place, and every other
-prints the same either way.
+root (`plist.mjs`, `pom.mjs`) or spells a root differently from the same
+value in place (`nestedtext.mjs`, `hcl.mjs`) writes it as it stands in
+place, and every other prints the same either way.
 
 **Editing** needs no code: fig's splice engine writes an edit from
 `syntax`. A format whose fragments cannot be spelled from constants

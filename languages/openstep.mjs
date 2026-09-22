@@ -437,13 +437,22 @@ function print(_dialect, t, _options) {
 // A value is text the CLI hands over, spelled as a string — bare when it
 // can be — unless it is already a dictionary, an array, data or a quoted
 // string, which is spliced as written. An entry ends in `;`, an item in
-// `,`. Where the target's indentation is tabs padded with spaces, the
-// member the engine is placing would follow a container written on one
-// line, and land outside it: refused. (Only an engine that pads says so;
-// see the header.)
+// `,`, and a value over several lines is moved under the member's indent.
+// Where the target's indentation is tabs padded with spaces, the member
+// the engine is placing would follow a container written on one line, and
+// land outside it: refused. (Only an engine that pads says so; see the
+// header.)
 
 function oneLine(indent) {
   return /^\t+ +$/.test(indent);
+}
+
+// A value over several lines — a dictionary or array spliced as the
+// printer writes it, its lines at the top level — moved under the member's
+// indent, so its entries and its close bracket land at the member's depth.
+function under(indent, text) {
+  const [first, ...rest] = text.split("\n");
+  return [first, ...rest.map((line) => (line === "" ? "" : indent + line))].join("\n");
 }
 
 function render(which, args) {
@@ -454,11 +463,11 @@ function render(which, args) {
   }
   if (which === "entry") {
     if (oneLine(args.indent)) throw new Error("this dictionary is written on one line; an entry cannot be added to it in place");
-    return spellString(args.key) + " = " + args.value + ";";
+    return under(args.indent, spellString(args.key) + " = " + args.value + ";");
   }
   if (which === "item") {
     if (oneLine(args.indent)) throw new Error("this array is written on one line; an item cannot be added to it in place");
-    return args.value + ",";
+    return under(args.indent, args.value + ",");
   }
   throw new Error("no renderer `" + which + "`");
 }

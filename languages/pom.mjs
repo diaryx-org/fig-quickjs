@@ -42,10 +42,15 @@
 // an element is not renamed in place, since its close tag would not
 // follow; `set` does not vivify a missing element; and an entry added to
 // an element that has attributes lands first among its children, since
-// the attributes are the entries the engine splices after. An element
-// written empty as `<a/>` has no text position: it reads as the empty
-// string over the whole element, and a value written there lands over
-// the element, which the reparse refuses. The same object
+// the attributes are the entries the engine splices after. A container a
+// binding hands the editor (`options.splice`) is its content, its children
+// one level in: a new entry takes it indented under itself, and a value
+// replaced takes it as it stands, which the engine does not re-indent; a
+// list not tagged with its item name, or an attribute, is refused: neither
+// has a spelling as content.
+// An element written empty as `<a/>` has no text position: it reads as
+// the empty string over the whole element, and a value written there
+// lands over the element, which the reparse refuses. The same object
 // `@diaryx/fig`'s `registerLanguage` takes, so it serves the browser and
 // Node unchanged.
 import * as fig from "fig";
@@ -338,6 +343,25 @@ function writeElement(w, name, row, depth) {
   return w.put("<", name, ">", X.escape(textOf(row)), "</", name, ">");
 }
 
+// Splice text for a container: what stands between its element's tags —
+// the node's span — which is its children on lines of their own, one level
+// in, and the line break before the close tag. The entry renderer or the
+// element already in place supplies the tags. What content cannot carry
+// is refused: an attribute belongs to the opening tag, and a list's items
+// are elements named for the list, a name the value is not told.
+function spliceContent(root, options) {
+  if (root.kind === "mapping" && root.items.some((e) => e.key.kind === "string" && e.key.text.startsWith("@"))) {
+    throw new Error("an attribute belongs to an element's opening tag; a mapping with `@` entries cannot be spliced as a value");
+  }
+  if (root.kind === "sequence" && root.items.length > 0 && !(root.tag && root.tag[0] === "!")) {
+    throw new Error("a list's items are elements named for the list, a name a spliced value is not told");
+  }
+  const w = fig.writer(options);
+  writeElement(w, "splice", root, 0);
+  const s = w.string();
+  return s.slice(s.indexOf(">") + 1, s.lastIndexOf("</"));
+}
+
 function print(_dialect, t, options) {
   fig.index(t);
   const root = t.byid(0);
@@ -347,6 +371,8 @@ function print(_dialect, t, options) {
     w.put(X.escape(textOf(root)));
     return w.string();
   }
+  // Splice text: the content, with no declaration and no root element.
+  if (options?.splice) return spliceContent(root, options);
   const name = root.tag && root.tag[0] === "!" ? root.tag.slice(1) : "project";
   w.put('<?xml version="1.0" encoding="UTF-8"?>').nl();
   writeComments(w, root.leading, 0);
@@ -358,8 +384,10 @@ function print(_dialect, t, options) {
 
 // ── the renderers ─────────────────────────────────────────────────────────
 // A value is text inside its element, escaped — or markup, spliced as
-// written, when it begins with `<`. An entry is `<key>value</key>`. A key
-// is not renamed: the renderer is the refusal.
+// written, when it begins with `<`. An entry is `<key>value</key>`, a
+// value over several lines (a container's content, its children one level
+// in) moved under the entry's indent. A key is not renamed: the renderer
+// is the refusal.
 
 // `&`, `<` and `>` escaped, an `&` that already begins a reference left
 // as it is: a value reaches the renderer bare from the command line and
@@ -369,12 +397,19 @@ const escapeOnce = (s) => s.replace(/&(?![A-Za-z]+;|#[0-9]+;|#x[0-9A-Fa-f]+;)|[<
 function render(which, args) {
   if (which === "value") {
     const t = args.value.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+    // A container's content, as splice text spells it: its lines kept as
+    // they stand, the child lines between a line break after the open tag
+    // and one before the close tag.
+    if (t[0] === "<" && /^[ \t]*\r?\n/.test(args.value)) {
+      return "\n" + args.value.replace(/^[ \t]*\r?\n/, "").replace(/[ \t\r\n]+$/, "") + "\n";
+    }
     return t[0] === "<" ? t : escapeOnce(t);
   }
   if (which === "entry") {
     if (args.key.startsWith("@")) throw new Error("an attribute cannot be added in place; edit the element's opening tag");
     const key = validName(args.key);
-    return "<" + key + ">" + args.value + "</" + key + ">";
+    const [first, ...rest] = ("<" + key + ">" + args.value + "</" + key + ">").split("\n");
+    return [first, ...rest.map((line) => (line === "" ? "" : args.indent + line))].join("\n");
   }
   if (which === "key") throw new Error("an element cannot be renamed in place; its close tag would not follow");
   throw new Error("no renderer `" + which + "`");
