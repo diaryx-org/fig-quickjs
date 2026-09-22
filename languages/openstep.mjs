@@ -34,11 +34,14 @@
 // `set` vivifies a missing dictionary as `{}`. A dictionary or array
 // written on one line, `{isa = PBXBuildFile; fileRef = C3D4; }`, takes
 // no new member in place, because a line-based splice would land the
-// member on the next line outside it; the renderers refuse it where the
-// file is tab-indented, as Xcode's are. A `.strings` file in UTF-16 does
-// not arrive: the host decodes UTF-8 alone. The same object
-// `@diaryx/fig`'s `registerLanguage` takes, so it serves the browser and
-// Node unchanged.
+// member on the next line outside it. The renderers refused it where the
+// file is tab-indented, as Xcode's are, by the spaces fig's engine padded
+// the member's indent with out to the container's column; an engine that
+// no longer pads (fig's 63c448b) gives them nothing to tell it by, and the
+// member lands after the line, in the enclosing dictionary. A `.strings`
+// file in UTF-16 does not arrive: the host decodes UTF-8 alone. The same
+// object `@diaryx/fig`'s `registerLanguage` takes, so it serves the
+// browser and Node unchanged.
 import * as fig from "fig";
 import * as G from "fig/grammar";
 
@@ -433,10 +436,11 @@ function print(_dialect, t, _options) {
 // ── the renderers ─────────────────────────────────────────────────────────
 // A value is text the CLI hands over, spelled as a string — bare when it
 // can be — unless it is already a dictionary, an array, data or a quoted
-// string, which is spliced as written. An entry ends in `;`, an item in `,`. Where the
-// target's indentation is tabs padded with spaces, the member the engine
-// is placing would follow a container written on one line, and land
-// outside it: refused.
+// string, which is spliced as written. An entry ends in `;`, an item in
+// `,`. Where the target's indentation is tabs padded with spaces, the
+// member the engine is placing would follow a container written on one
+// line, and land outside it: refused. (Only an engine that pads says so;
+// see the header.)
 
 function oneLine(indent) {
   return /^\t+ +$/.test(indent);
