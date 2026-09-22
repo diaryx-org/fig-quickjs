@@ -354,6 +354,11 @@ fn openstep_edits_entries_and_items() {
     );
     ed.delete(&[key("objects"), key("A1")]).unwrap();
     assert!(!ed.source().unwrap().contains("PBXBuildFile"));
+}
+
+#[test]
+#[ignore = "fig 0304c11 refuses an entry into a closed-container format's mapping whose span ends no later than its last entry's line, and a braceless `.strings` root runs to the end of input, which is that line: every `.strings` file whose last entry is on its last line is refused ContainerClosesOnItsLine"]
+fn openstep_strings_takes_an_entry_and_keeps_its_braceless_shape() {
     // A `.strings` file keeps its braceless shape.
     let strings = b"\"hello\" = \"Hello\";\n";
     let mut ed = Editor::open(strings, js_openstep()).unwrap();
@@ -370,12 +375,31 @@ fn openstep_edits_entries_and_items() {
 }
 
 #[test]
-#[ignore = "fig's editor gives a runtime renderer no sign that a closed container is on one line since its indentAt stopped padding to the anchor's column (fig 63c448b); the member lands after the line, in the enclosing dictionary"]
 fn openstep_refuses_a_member_for_a_one_line_object() {
+    // fig's engine refuses an entry into a dictionary that closes on its
+    // last entry's line (`ContainerClosesOnItsLine`, over the C ABI as an
+    // invalid argument): the line-based splice would land it outside the
+    // braces. `set` reports the same, and the source is untouched.
     let src = b"{\n\tobjects = {\n\t\tA1 /* Foo.swift */ = {isa = PBXBuildFile; fileRef = B2 /* Foo.swift */; };\n\t};\n}\n";
     let mut ed = Editor::open(src, js_openstep()).unwrap();
     let inserted = ed.insert_value(&[key("objects"), key("A1")], "settings", "z");
-    assert!(inserted.is_err(), "{}", ed.source().unwrap());
+    assert!(
+        matches!(inserted, Err(fig::Error::InvalidArgument)),
+        "{inserted:?}\n{}",
+        ed.source().unwrap()
+    );
+    let set = ed.set_value(&[key("objects"), key("A1"), key("settings")], "z");
+    assert!(matches!(set, Err(fig::Error::InvalidArgument)), "{set:?}");
+    assert_eq!(ed.source().unwrap().as_bytes(), src);
+}
+
+#[test]
+#[ignore = "fig's engine refuses an entry into a one-line mapping (0304c11) but not an item into a one-line sequence: the item lands after the line, in the enclosing array"]
+fn openstep_refuses_an_item_for_a_one_line_array() {
+    let src = b"{\n\tL = (\n\t\t(a, b),\n\t);\n}\n";
+    let mut ed = Editor::open(src, js_openstep()).unwrap();
+    let appended = ed.append_value(&[key("L"), Segment::Index(0)], "c");
+    assert!(appended.is_err(), "{}", ed.source().unwrap());
     assert_eq!(ed.source().unwrap().as_bytes(), src);
 }
 

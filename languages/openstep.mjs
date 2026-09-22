@@ -31,14 +31,14 @@
 //
 // Partial by design: the generic editor replaces a value, adds or deletes
 // an entry or an item, expands `{}` and `()` around a first member, and
-// `set` vivifies a missing dictionary as `{}`. A dictionary or array
-// written on one line, `{isa = PBXBuildFile; fileRef = C3D4; }`, takes
-// no new member in place, because a line-based splice would land the
-// member on the next line outside it. The renderers refused it where the
-// file is tab-indented, as Xcode's are, by the spaces fig's engine padded
-// the member's indent with out to the container's column; an engine that
-// no longer pads (fig's 63c448b) gives them nothing to tell it by, and the
-// member lands after the line, in the enclosing dictionary. A `.strings`
+// `set` vivifies a missing dictionary as `{}`. A dictionary written on one
+// line, `{isa = PBXBuildFile; fileRef = C3D4; }`, takes no new entry in
+// place, because a line-based splice would land it on the next line
+// outside the braces: fig's engine refuses it (`ContainerClosesOnItsLine`).
+// An array written on one line is not refused by the engine: an item added
+// to `(a, b)` lands after the line, which the reparse refuses where that
+// is inside a dictionary and accepts, in the enclosing array, where it is
+// not. A `.strings`
 // file in UTF-16 does not arrive: the host decodes UTF-8 alone. The same
 // object `@diaryx/fig`'s `registerLanguage` takes, so it serves the
 // browser and Node unchanged.
@@ -438,14 +438,8 @@ function print(_dialect, t, _options) {
 // can be — unless it is already a dictionary, an array, data or a quoted
 // string, which is spliced as written. An entry ends in `;`, an item in
 // `,`, and a value over several lines is moved under the member's indent.
-// Where the target's indentation is tabs padded with spaces, the member
-// the engine is placing would follow a container written on one line, and
-// land outside it: refused. (Only an engine that pads says so; see the
-// header.)
-
-function oneLine(indent) {
-  return /^\t+ +$/.test(indent);
-}
+// Whether the container closes on the line the member follows is the
+// engine's to know, not the renderers': see the header.
 
 // A value over several lines — a dictionary or array spliced as the
 // printer writes it, its lines at the top level — moved under the member's
@@ -462,11 +456,9 @@ function render(which, args) {
     return spellString(t);
   }
   if (which === "entry") {
-    if (oneLine(args.indent)) throw new Error("this dictionary is written on one line; an entry cannot be added to it in place");
     return under(args.indent, spellString(args.key) + " = " + args.value + ";");
   }
   if (which === "item") {
-    if (oneLine(args.indent)) throw new Error("this array is written on one line; an item cannot be added to it in place");
     return under(args.indent, args.value + ",");
   }
   throw new Error("no renderer `" + which + "`");
