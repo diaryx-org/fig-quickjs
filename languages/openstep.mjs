@@ -31,17 +31,15 @@
 //
 // Partial by design: the generic editor replaces a value, adds or deletes
 // an entry or an item, expands `{}` and `()` around a first member, and
-// `set` vivifies a missing dictionary as `{}`. A dictionary written on one
-// line, `{isa = PBXBuildFile; fileRef = C3D4; }`, takes no new entry in
-// place, because a line-based splice would land it on the next line
-// outside the braces: fig's engine refuses it (`ContainerClosesOnItsLine`).
-// An array written on one line is not refused by the engine: an item added
-// to `(a, b)` lands after the line, which the reparse refuses where that
-// is inside a dictionary and accepts, in the enclosing array, where it is
-// not. A `.strings`
-// file in UTF-16 does not arrive: the host decodes UTF-8 alone. The same
-// object `@diaryx/fig`'s `registerLanguage` takes, so it serves the
-// browser and Node unchanged.
+// `set` vivifies a missing dictionary as `{}`. A dictionary or array
+// written on one line, `{isa = PBXBuildFile; fileRef = C3D4; }` or
+// `(a, b)`, takes no new member in place, because a line-based splice
+// would land it on the next line outside the brackets: fig's engine
+// refuses it (`ContainerClosesOnItsLine`). A braceless `.strings` file has
+// no close, and takes an entry after its last. A `.strings` file in UTF-16
+// does not arrive: the host decodes UTF-8 alone. The same object
+// `@diaryx/fig`'s `registerLanguage` takes, so it serves the browser and
+// Node unchanged.
 import * as fig from "fig";
 import * as G from "fig/grammar";
 

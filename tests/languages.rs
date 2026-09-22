@@ -354,11 +354,6 @@ fn openstep_edits_entries_and_items() {
     );
     ed.delete(&[key("objects"), key("A1")]).unwrap();
     assert!(!ed.source().unwrap().contains("PBXBuildFile"));
-}
-
-#[test]
-#[ignore = "fig 0304c11 refuses an entry into a closed-container format's mapping whose span ends no later than its last entry's line, and a braceless `.strings` root runs to the end of input, which is that line: every `.strings` file whose last entry is on its last line is refused ContainerClosesOnItsLine"]
-fn openstep_strings_takes_an_entry_and_keeps_its_braceless_shape() {
     // A `.strings` file keeps its braceless shape.
     let strings = b"\"hello\" = \"Hello\";\n";
     let mut ed = Editor::open(strings, js_openstep()).unwrap();
@@ -394,12 +389,17 @@ fn openstep_refuses_a_member_for_a_one_line_object() {
 }
 
 #[test]
-#[ignore = "fig's engine refuses an entry into a one-line mapping (0304c11) but not an item into a one-line sequence: the item lands after the line, in the enclosing array"]
 fn openstep_refuses_an_item_for_a_one_line_array() {
+    // The same refusal for an array that closes on its last item's line:
+    // an item after that line would land in the enclosing array.
     let src = b"{\n\tL = (\n\t\t(a, b),\n\t);\n}\n";
     let mut ed = Editor::open(src, js_openstep()).unwrap();
     let appended = ed.append_value(&[key("L"), Segment::Index(0)], "c");
-    assert!(appended.is_err(), "{}", ed.source().unwrap());
+    assert!(
+        matches!(appended, Err(fig::Error::InvalidArgument)),
+        "{appended:?}\n{}",
+        ed.source().unwrap()
+    );
     assert_eq!(ed.source().unwrap().as_bytes(), src);
 }
 
