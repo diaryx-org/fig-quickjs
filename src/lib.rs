@@ -95,10 +95,16 @@ pub mod module {
     //! `children` (ids), `items` (rows), `leading`, `trailing` and
     //! `dangling`, a keyvalue row has `key` and `value`, and `t.byid(id)`
     //! finds a row — and `options` as `{pretty, strip_comments, indent,
-    //! width}`. It returns the document as a string; `fig.writer(options)`
-    //! is a buffer that knows the options. A table whose root is a scalar
-    //! is a fragment the editor will splice: spell it as the scalar stands
-    //! alone.
+    //! width, splice}`. It returns the document as a string;
+    //! `fig.writer(options)` is a buffer that knows the options. `splice`
+    //! is `true` when fig wants the value as the editor splices it into a
+    //! document — every value a binding's editor hands it — and not as a
+    //! document of its own: a format whose document wraps its root
+    //! (plist's `<plist>`) or spells a root differently from the same
+    //! value in place (NestedText's `>` block) prints it bare, and every
+    //! other format prints the same either way. A table whose root is a
+    //! scalar is a fragment even without it (`fig get <file> <path>`):
+    //! spell it as the scalar stands alone.
     //!
     //! `render(which, args)` answers one of the renderers `renderers`
     //! declares — `which` is "value", "entry", "item", "tail" or "key" —
@@ -293,6 +299,7 @@ impl Language for JsLanguage {
                     ("strip_comments", Value::Bool(options.strip_comments)),
                     ("indent", Value::Int(options.indent as i64)),
                     ("width", Value::Int(options.width as i64)),
+                    ("splice", Value::Bool(options.splice)),
                 ]),
             ),
         ]))?;

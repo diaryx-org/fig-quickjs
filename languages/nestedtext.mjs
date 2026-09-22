@@ -365,8 +365,16 @@ function parse(_dialect, input) {
 // otherwise, `- ` items likewise, a key that would not read back as one
 // spelled as `: ` lines with its value always nested; comments as `#`
 // lines — leading above the item, a trailing one on its own line after
-// it, dangling at a container's end. A null root prints nothing; a scalar
-// root is a `>` block.
+// it, dangling at a container's end. An empty container has no block
+// spelling — `key:` over nothing reads back as the empty string — so it
+// is its inline `{}` or `[]` on a line of its own, at the root as well.
+// A null root prints nothing; a scalar root is a `>` block.
+//
+// Splice text (`options.splice`) is what follows `key:` or `-` in place,
+// the compiled `printSplice`: a one-line scalar is its plain text; a
+// container, or a string with a line break, is a newline and then its
+// nested block at depth 0, which the renderers re-indent under the key;
+// a null is printed as a document.
 
 const INDENT = "    ";
 
@@ -417,6 +425,11 @@ class Printer {
 
   container(row, depth) {
     const dict = row.kind === "mapping";
+    if (row.items.length === 0) {
+      this.w.comments(row.dangling, "#", depth);
+      this.w.indent(depth).put(dict ? "{}" : "[]", "\n");
+      return;
+    }
     for (const item of row.items) {
       const value = dict ? item.value : item;
       this.w.comments((dict ? item.key : item).leading, "#", depth);
@@ -437,20 +450,32 @@ class Printer {
   }
 }
 
-function print(_dialect, t, _options) {
+function print(_dialect, t, options) {
   const w = fig.writer({ indent: INDENT.length });
   const p = new Printer(w);
   const root = fig.index(t).byid(0);
+  const splice = options?.splice === true;
   if (root.kind === "null") return "";
-  if (root.kind === "mapping" || root.kind === "sequence") p.container(root, 0);
-  else p.taggedLines(">", 0, scalarText(root));
+  if (root.kind === "mapping" || root.kind === "sequence") {
+    if (splice) w.put("\n");
+    p.container(root, 0);
+  } else {
+    const text = scalarText(root);
+    if (splice && !text.includes("\n")) return text;
+    if (splice) w.put("\n");
+    p.taggedLines(">", 0, text);
+  }
   return w.string();
 }
 
 // ── the renderers ─────────────────────────────────────────────────────────
 // What the editor splices. `args.indent` is the line's indentation; a
 // value that is empty or has a line break goes under its key as a `>`
-// block one level in, a single line rides the key's line.
+// block one level in, a single line rides the key's line — unless it is
+// a nested block (`nestedBlock`): a line break and then lines that read as
+// NestedText on their own, which is how splice text spells a container or
+// a multi-line string. Those lines are re-indented under the key as they
+// stand.
 
 // Each line of `text` after `tag` — a bare tag for an empty line — joined
 // with `sep`.
@@ -458,7 +483,31 @@ function tagged(text, tag, sep) {
   return text.split("\n").map((line) => (line === "" ? tag : tag + " " + line)).join(sep);
 }
 
+// The nested block `text` spells, when it spells one: text that opens with
+// a line break and whose rest, trailing line breaks trimmed, parses as
+// NestedText with a value that is not null — returned without the leading
+// and trailing breaks. Otherwise null, and `text` is a string: an argument
+// means structure only if it starts with a line break AND the rest is
+// NestedText.
+function nestedBlock(text) {
+  if (text.length < 2 || text[0] !== "\n") return null;
+  const block = text.slice(1).replace(/\n+$/, "");
+  if (block === "") return null;
+  let root;
+  try {
+    root = parse("js-nestedtext", block).rows[0];
+  } catch {
+    return null;
+  }
+  return root === undefined || root.kind === "null" ? null : block;
+}
+
 function valueTail(out, childIndent, text, forceNested) {
+  const block = nestedBlock(text);
+  if (block !== null) {
+    for (const line of block.split("\n")) out.push("\n" + (line === "" ? "" : childIndent) + line);
+    return;
+  }
   if (!forceNested && text !== "" && !text.includes("\n")) out.push(" " + text);
   else out.push("\n" + childIndent + tagged(text, ">", "\n" + childIndent));
 }
@@ -483,7 +532,9 @@ function render(which, args) {
     valueTail(out, child, args.value, false);
   } else if (which === "tail") {
     if (args.key === "") {
-      out.push(tagged(args.value, ">", "\n"));
+      // The document root: a nested block as it stands, at column 0, or
+      // else a `>` block — a bare scalar line has no grammar at the top.
+      out.push(nestedBlock(args.value) ?? tagged(args.value, ">", "\n"));
     } else {
       const multiline = isMultilineKeyText(args.key);
       if (!multiline) out.push(":");

@@ -23,8 +23,9 @@
 //
 // The compiled parser keeps no comments (its editor works on the `<!-- -->`
 // pairs in the source), so neither does this one. The compiled format
-// declares two fragment renderers — how a value spells as a typed element,
-// and an entry as `<key>k</key>` over the value — and they are here too.
+// declares three fragment renderers — how a value spells as a typed
+// element, an entry as `<key>k</key>` over the value, and a renamed key as
+// its whole `<key>` element — and they are here too.
 // Spans are byte offsets, 0-based, `[start, end)`.
 //
 // The XML shape — tags, text, CDATA, what is skipped, and how each is
@@ -179,7 +180,9 @@ const parse = G.document({
 // ── the printer ───────────────────────────────────────────────────────────
 // The compiled printer's layout: the XML declaration, the DOCTYPE, a
 // `<plist version="1.0">` wrapper, and one element per line indented by
-// `options.indent` per depth; `<dict/>` and `<array/>` when empty.
+// `options.indent` per depth; `<dict/>` and `<array/>` when empty. Splice
+// text (`options.splice`) is the root as its bare element, with no header
+// and no wrapper.
 
 const textElement = (tag, text) => "<" + tag + ">" + X.escape(text) + "</" + tag + ">";
 
@@ -231,8 +234,11 @@ function print(_dialect, t, options) {
   fig.index(t);
   const rootRow = t.byid(0);
   const w = fig.writer(options);
-  if (fig.isScalar(rootRow.kind)) {
-    // A fragment: the scalar as its typed element, standing alone.
+  if (options?.splice || fig.isScalar(rootRow.kind)) {
+    // Splice text, or a scalar fragment: the bare element with no
+    // declaration, DOCTYPE or `<plist>` wrapper, a container's lines at the
+    // top level — the compiled `printSplice`. What the editor splices, and
+    // what `renderValue` takes as an element already spelled.
     writeValue(w, rootRow, 1);
     return w.string();
   }
@@ -263,9 +269,23 @@ function renderValue(valueText, literal) {
   return textElement("string", t);
 }
 
+// An entry: `<key>k</key>`, then the value at the same indent. A value that
+// spans lines — a `<dict>` or `<array>` spliced as the printer spells it,
+// its lines at the top level — has every further non-empty line moved
+// under `indent` too, so it lands at the entry's depth.
+function renderEntry(indent, key, value) {
+  const [first, ...rest] = value.split("\n");
+  let out = "<key>" + X.escape(key) + "</key>\n" + indent + first;
+  for (const line of rest) out += "\n" + (line === "" ? "" : indent) + line;
+  return out;
+}
+
 function render(which, args) {
   if (which === "value") return renderValue(args.value, args.literal ?? "string");
-  if (which === "entry") return "<key>" + X.escape(args.key) + "</key>\n" + args.indent + args.value;
+  if (which === "entry") return renderEntry(args.indent, args.key, args.value);
+  // A renamed key: a key's span is its whole `<key>…</key>` element, so the
+  // new name is spelled and escaped rather than spliced bare over the tags.
+  if (which === "key") return "<key>" + X.escape(args.key) + "</key>";
   throw new Error("no renderer `" + which + "`");
 }
 
@@ -290,7 +310,7 @@ export default {
   samples: [
     '<plist version="1.0"><dict><key>a</key><string>b</string><key>n</key><integer>1</integer><key>l</key><array><true/><false/></array></dict></plist>\n',
   ],
-  renderers: ["value", "entry"],
+  renderers: ["value", "entry", "key"],
   parse,
   print,
   render,

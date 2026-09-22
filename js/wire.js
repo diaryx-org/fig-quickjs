@@ -101,6 +101,7 @@ function handleInner(lang, requestLine) {
                 strip_comments: o.strip_comments ?? false,
                 indent: o.indent ?? 2,
                 width: o.width ?? 80,
+                splice: o.splice ?? false,
             };
             return { ok: true, output: lang.print(req.dialect, req.table, options) };
         }
