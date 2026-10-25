@@ -38,9 +38,11 @@
 // token on the first block.
 //
 // Partial by design, and the tree says where: the generic editor replaces
-// an attribute's value, adds an attribute to a body with attributes or
-// nested blocks in it (never to an empty `{}`, which is refused), deletes
-// one, comments one, and deleting a block is the container op; tuples
+// an attribute's value, adds an attribute to a body with attributes in it
+// (after its last attribute) or with only nested blocks in it (under its
+// header line, unindented, for now) but never to an empty `{}`, which is
+// refused, deletes one, comments one, and deleting a block is the
+// container op; tuples
 // take no item in place; a new block, a new label and a vivified path
 // are not spelled, since the engine's header syntax is a `[table]` line;
 // and an attribute added to a label level, which HCL has no place for,
@@ -559,13 +561,13 @@ class Parser {
     // Where this block is, kept on the body for the sequence a second
     // block of the path makes.
     body.header = { start, close, mention: mention.span };
-    // The mentions are of the `entry` kind: a block's header line is the
-    // line its entry is written on, and what the engine splices into the
-    // parent goes after the block, not before it.
+    // A body's mentions are of the `header` kind: its header line is a
+    // line of its own, so the engine splices an attribute into the body
+    // rather than treating it as a table its parent's lines write.
     const section = (node, h) => {
       S.region(node, h.start);
       S.region(node, h.close);
-      S.mention(node, h.mention, "entry");
+      S.mention(node, h.mention, "header");
     };
     const existing = parent.byKey.get(key.text);
     if (existing) {
@@ -812,7 +814,7 @@ export default {
   name: "js-hcl",
   caps: { read: true, edit: true, serialize: true },
   syntax: {
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: " = ",
     // A block body's `{` is not a flow container — its attributes are
     // one per line, no commas — so every container is edited by line;

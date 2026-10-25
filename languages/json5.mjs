@@ -525,6 +525,11 @@ function print(dialect, t, options) {
   return w.string();
 }
 
+function render(which, args) {
+  if (which === "key_name") return quote(args.key);
+  throw new Error(`no renderer \`${which}\``);
+}
+
 // ── the language ──────────────────────────────────────────────────────────
 
 export default {
@@ -534,20 +539,23 @@ export default {
   // rides in a `$fig` envelope, JSON5's own `Infinity`/`NaN` included.
   lossless: { null: true },
   syntax: {
-    comments: { style: "slashes", line: { open: "//" }, trailing: { open: "//" } },
+    comments: { line: { open: "//" }, trailing: { open: "//" } },
     kv_sep: ": ",
-    key_style: "json_quoted",
     empty_map_literal: "{}",
   },
   // The language's own name goes on its first dialect; the compiled
   // dialects own `.json5` and `.jsonc`, and a compiled format's extension
   // wins, so these are reached by `--lang js-json5` / `--lang js-jsonc`.
   dialects: [
-    { name: "js-json5", extensions: ["json5"], splice: "json_string", empty_doc_seed: "{}\n" },
-    { name: "js-jsonc", extensions: ["jsonc"], splice: "json_string", empty_doc_seed: "{}\n" },
+    { name: "js-json5", extensions: ["json5"], splice: "escaped", empty_doc_seed: "{}\n" },
+    { name: "js-jsonc", extensions: ["jsonc"], splice: "escaped", empty_doc_seed: "{}\n" },
   ],
   samples: ['{"a": 1, "b": [true, null, "s"], "c": {"d": 2.5}}\n', "// top\n[] // empty\n"],
-  renderers: [],
+  // A key's name as JSON5 and JSONC write one, for a key the editor inserts
+  // or renames: quoted and escaped, as the compiled dialects write it,
+  // though JSON5 could leave an identifier bare.
+  renderers: ["key_name"],
   parse,
   print,
+  render,
 };

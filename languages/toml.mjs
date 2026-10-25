@@ -893,6 +893,11 @@ function print(_dialect, t, options) {
   return w.string();
 }
 
+function render(which, args) {
+  if (which === "key_name") return spellKey(args.key);
+  throw new Error(`no renderer \`${which}\``);
+}
+
 // ── the language ──────────────────────────────────────────────────────────
 
 export default {
@@ -902,10 +907,9 @@ export default {
   // native, so a null or an enum literal rides in a `$fig` envelope.
   lossless: { offset_datetime: true, local_datetime: true, local_date: true, local_time: true, number_special: true },
   syntax: {
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: " = ",
     flow_map_pad: " ",
-    key_style: "bare_or_quoted",
     empty_map_literal: "{}",
     block_seq_editable: false,
     section_noun: "table",
@@ -915,7 +919,10 @@ export default {
   // wins, so this is reached by `--lang js-toml`.
   dialects: [{ name: "js-toml", extensions: ["toml"], splice: "literal", empty_doc_seed: "" }],
   samples: ['a = 1\nb = [1, 2]\n\n[s]\nk = "v"\nt = { x = 1 }\n'],
-  renderers: [],
+  // A key's name as TOML writes one, for a key the editor inserts or
+  // renames: bare when it can be, else a basic string.
+  renderers: ["key_name"],
   parse,
   print,
+  render,
 };

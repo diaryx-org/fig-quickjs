@@ -22,9 +22,9 @@
 // — and is a float when it has a `.` or its radix's exponent; `inf`,
 // `-inf` and `nan` are floats. A string decodes Zig's escapes, and a `\\`
 // multiline string joins its lines with `\n`, spanning the first `\\` to
-// the last line's end. `.name` is an `enum_literal` string, `'c'` a
-// `char_literal` int whose text is the decimal codepoint, and a `.@"…"`
-// name decodes as a string. Parentheses group and leave no trace: the node
+// the last line's end. `.name` is an `enum_literal` string over its dot
+// and its name, `'c'` a `char_literal` int whose text is the decimal
+// codepoint, and a `.@"…"` name decodes as a string. Parentheses group and leave no trace: the node
 // is the one inside them, and a comment in there is dropped, as the
 // compiled walk drops it.
 //
@@ -389,7 +389,8 @@ value = (sc, ctx) => {
     sc.advance();
     const n = name(sc);
     if (n == null) sc.fail("expected a name after `.`", s);
-    return fig.scalar("string", n.span, n.text, { ext_kind: "enum_literal" });
+    // The literal spans its dot, as the compiled walk spans it.
+    return fig.scalar("string", [s, n.span[1]], n.text, { ext_kind: "enum_literal" });
   }
   if (c === 45) return negated(sc);
   if (c === 34) return stringLiteral(sc);
@@ -447,10 +448,10 @@ const isContainer = (row) => row.kind === "mapping" || row.kind === "sequence";
 const escaped = (s) =>
   s.replace(/["\\\n\r\t\x00-\x1f\x7f]/g, (c) => ESCAPES[c] ?? "\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
 
+const keyName = (name) => (BARE.test(name) && !KEYWORDS.has(name) ? "." + name : '.@"' + escaped(name) + '"');
+
 function writeName(w, name) {
-  w.put(".");
-  if (BARE.test(name) && !KEYWORDS.has(name)) w.put(name);
-  else w.put('@"', escaped(name), '"');
+  w.put(keyName(name));
 }
 
 // A character literal from the codepoint its text spells: the escapes it
@@ -541,9 +542,8 @@ export default {
   caps: { read: true, edit: true, serialize: true },
   lossless: { null: true, enum_literal: true, char_literal: true },
   syntax: {
-    comments: { style: "slashes", line: { open: "//" }, trailing: { open: "//" } },
+    comments: { line: { open: "//" }, trailing: { open: "//" } },
     kv_sep: " = ",
-    key_style: "zon_field",
     // The byte before every key, which the editor removes with the key:
     // `.` (the wire carries a sigil as its byte).
     key_sigil: 46,
@@ -556,7 +556,16 @@ export default {
   // wins, so this is reached by `--lang js-zon`.
   dialects: [{ name: "js-zon", extensions: ["zon"], splice: "literal", empty_doc_seed: ".{}\n" }],
   samples: ['.{ .a = 1, .b = .{ .c = "d" }, .e = .{ 1, 2 } }\n'],
-  renderers: [],
+  // A key's name as ZON writes one, for a key the editor inserts or
+  // renames: a struct field, `.name`, or `.@"has space"` when it is not a
+  // bare identifier.
+  renderers: ["key_name"],
   parse,
   print,
+  render,
 };
+
+function render(which, args) {
+  if (which === "key_name") return keyName(args.key);
+  throw new Error(`no renderer \`${which}\``);
+}
