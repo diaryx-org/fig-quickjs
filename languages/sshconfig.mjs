@@ -253,7 +253,7 @@ export default {
   caps: { read: true, edit: true, serialize: true },
   max_mapping_depth: 2,
   syntax: {
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: " ",
     empty_map_literal: null,
     flow_containers: false,

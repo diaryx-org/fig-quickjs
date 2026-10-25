@@ -393,7 +393,7 @@ export default {
   max_mapping_depth: 2,
   syntax: {
     // `;` is read; `#` is what is written, and what the editor writes.
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: " = ",
     // `{}` in a value is the two-character string `{}`, so nothing can be
     // auto-vivified; and a `[` opening the file is a header, not a flow

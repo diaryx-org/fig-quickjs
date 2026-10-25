@@ -14,7 +14,9 @@
  *  means that spelling is canonicalized to decimal before it is written:
  *  `hex` (`0x1F`), `octal` (`0o17`), `binary` (`0b1010`), `underscores`
  *  (`1_000`), `leadingZero` (`0755`), `bareDot` (`.5`, `5.`), `plus` (a
- *  leading `+`). */
+ *  leading `+`). `nonFinite` is the format's own spelling of each
+ *  non-finite float, `{ inf, negInf, nan }`, or absent for a format that
+ *  has none. */
 export const NONE = Object.freeze({});
 
 /** Strict JSON: none of it. */
@@ -22,11 +24,41 @@ export const JSON = NONE;
 
 /** JSON5's numbers are ES5.1 numeric literals: hex, a leading `+`, and
  *  bare dots — not `0o`/`0b`, `_`, or a leading zero. */
-export const JSON5 = Object.freeze({ hex: true, bareDot: true, plus: true });
+export const JSON5 = Object.freeze({
+  hex: true,
+  bareDot: true,
+  plus: true,
+  nonFinite: Object.freeze({ inf: "Infinity", negInf: "-Infinity", nan: "NaN" }),
+});
 
 /** YAML 1.2 core: hex and octal, a bare dot, a leading `+`, and a leading
  *  zero (read as decimal); no `0b` and no `_`, which 1.2 reads as strings. */
-export const YAML_1_2 = Object.freeze({ hex: true, octal: true, leadingZero: true, bareDot: true, plus: true });
+export const YAML_1_2 = Object.freeze({
+  hex: true,
+  octal: true,
+  leadingZero: true,
+  bareDot: true,
+  plus: true,
+  nonFinite: Object.freeze({ inf: ".inf", negInf: "-.inf", nan: ".nan" }),
+});
+
+/** Which non-finite float `raw` spells, if it spells one, in any of the
+ *  ways a parser stores it: `inf`/`nan` (TOML, ZON), `.inf`/`.nan` in
+ *  YAML's three cases, and `Infinity`/`NaN` (JSON5) — each with an optional
+ *  sign, which a NaN ignores. "inf", "negInf", "nan" or null. */
+export function nonFinite(raw) {
+  let body = raw;
+  let negative = false;
+  if (body[0] === "+" || body[0] === "-") {
+    negative = body[0] === "-";
+    body = body.slice(1);
+  }
+  if (body[0] === ".") body = body.slice(1);
+  body = body.toLowerCase();
+  if (body === "inf" || body === "infinity") return negative ? "negInf" : "inf";
+  if (body === "nan") return "nan";
+  return null;
+}
 
 /** Whether a format that spells `s` reads `raw` back as the same number. */
 export function spellable(raw, s) {
@@ -91,10 +123,16 @@ export function canonical(raw) {
   return out + exponent.replace(/_/g, "");
 }
 
-/** `raw` as a format that spells `s` writes it: itself when spellable,
- *  else canonical. */
+/** `raw` as a format that spells `s` writes it: a non-finite float in the
+ *  format's own spelling (an error where it has none), else itself when
+ *  spellable, else canonical. */
 export function text(raw, s) {
+  const v = nonFinite(raw);
+  if (v) {
+    if (s?.nonFinite) return s.nonFinite[v];
+    throw new Error("this format has no spelling for the non-finite number " + raw);
+  }
   return spellable(raw, s) ? raw : canonical(raw);
 }
 
-export default { NONE, JSON, JSON5, YAML_1_2, spellable, canonical, text };
+export default { NONE, JSON, JSON5, YAML_1_2, nonFinite, spellable, canonical, text };

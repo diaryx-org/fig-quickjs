@@ -141,7 +141,7 @@ function data(sc) {
   }
   if (pending >= 0) sc.fail("data holds whole bytes; this hex digit has no pair");
   sc.advance();
-  return fig.scalar("string", [s, sc.pos], base64(bytes), { ext_kind: "plist_data" });
+  return fig.scalar("string", [s, sc.pos], base64(bytes), { ext_kind: "data" });
 }
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -368,7 +368,7 @@ function isOneLine(m) {
 function writeValue(w, row, depth) {
   const k = row.kind;
   if (k === "string") {
-    w.put(row.ext_kind === "plist_data" ? spellData(row.text ?? "") : spellString(row.text ?? ""));
+    w.put(row.ext_kind === "data" ? spellData(row.text ?? "") : spellString(row.text ?? ""));
   } else if (k === "int" || k === "float" || k === "bool") {
     w.put(spellString(row.text ?? ""));
   } else if (k === "null") {
@@ -471,7 +471,7 @@ export default {
   // makes one rebuilds the tree without its tags, and `!strings` is a tag
   // this printer needs. A null reaching the printer is refused instead.
   syntax: {
-    comments: { style: "slashes", line: { open: "//" }, trailing: { open: "//" } },
+    comments: { line: { open: "//" }, trailing: { open: "//" } },
     kv_sep: " = ",
     empty_map_literal: "{}",
     // `{` opens a dictionary whose entries end in `;`, not a comma-separated

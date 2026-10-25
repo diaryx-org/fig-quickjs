@@ -22,23 +22,23 @@
 //! binary; and this crate converts nothing itself.
 //!
 //! ```no_run
-//! use fig::{Document, Format};
+//! use fig::Document;
 //! use fig_quickjs::JsLanguage;
 //!
 //! let lang = JsLanguage::from_file("languages/dotenv.mjs")?;
 //! let js_dotenv = fig::language::register(lang)?[0];
 //! let doc = Document::parse(b"A=1\n", js_dotenv)?;
-//! assert_eq!(doc.serialize(Format::Json)?, "{\n  \"A\": \"1\"\n}\n");
+//! assert_eq!(doc.serialize(fig_json::format()?)?, "{\n  \"A\": \"1\"\n}\n");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 use std::path::Path;
 
-use fig::helper::{description_from_value, encode, table_from_value, table_to_value};
+use fig::helper::{decode, description_from_value, encode, table_from_value, table_to_value};
 use fig::language::{
     Description, Language, LanguageError, NodeTable, PrintOptions, RenderArgs, Renderer,
 };
-use fig::{Document, Format, Value};
+use serde_json::{Value, json};
 
 mod engine;
 
@@ -62,7 +62,7 @@ pub mod module {
     //!   name: "js-dotenv",
     //!   caps: { read: true, edit: true, serialize: true }, // and `references` for a format with anchors, aliases and tags
     //!   max_mapping_depth: 0,
-    //!   syntax: { comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } }, kv_sep: "=", empty_map_literal: "{}" },
+    //!   syntax: { comments: { line: { open: "#" }, trailing: { open: "#" } }, kv_sep: "=", empty_map_literal: "{}" },
     //!   dialects: [{ name: "js-dotenv", extensions: ["env"], splice: "raw", empty_doc_seed: "" }],
     //!   samples: ["A=1\n"],
     //!   renderers: ["value"],
@@ -95,7 +95,7 @@ pub mod module {
     //! `children` (ids), `items` (rows), `leading`, `trailing` and
     //! `dangling`, a keyvalue row has `key` and `value`, and `t.byid(id)`
     //! finds a row — and `options` as `{pretty, strip_comments, indent,
-    //! width, splice}`. It returns the document as a string;
+    //! width, splice, flow}`. It returns the document as a string;
     //! `fig.writer(options)` is a buffer that knows the options. `splice`
     //! is `true` when fig wants the value as the editor splices it into a
     //! document — every value a binding's editor hands it — and not as a
@@ -107,12 +107,14 @@ pub mod module {
     //! spell it as the scalar stands alone.
     //!
     //! `render(which, args)` answers one of the renderers `renderers`
-    //! declares — `which` is "value", "entry", "item", "tail" or "key" —
-    //! given `{dialect, indent, key, value, literal, old_key}`, and returns
-    //! the fragment as a string. `literal` is what fig's bare-literal rules
-    //! made of `value`: "null", "bool", "int", "float", "datetime" or
-    //! "string" — classified by fig, so a module spells the kind it is told
-    //! and never decides one.
+    //! declares — `which` is "value", "entry", "item", "tail", "key",
+    //! "key_name" or "string" — given `{dialect, indent, key, value,
+    //! literal, old_key, old_value, parent_key, parent_tag}`, and returns
+    //! the fragment as a string. What each renderer is handed is
+    //! `fig::language::RenderArgs`'s to say. `literal` is what fig's
+    //! bare-literal rules made of `value`: "null", "bool", "int", "float",
+    //! "datetime" or "string" — classified by fig, so a module spells the
+    //! kind it is told and never decides one.
     //!
     //! Offsets are byte offsets into the input, 0-based and `[start, end)`,
     //! as the wire's are. JavaScript indexes strings by UTF-16 unit, so a
@@ -173,24 +175,9 @@ impl JsLanguage {
         let engine = engine::Engine::load(source)?;
         // The description, validated as the CLI validates a helper's: a
         // module that declares itself wrongly is refused here, at load.
-        let response = engine
-            .respond(r#"{"op":"describe"}"#)
-            .map_err(Error::Script)?;
-        let value =
-            decode(&response).map_err(|e| Error::Script(format!("{name}: {}", e.message)))?;
-        if !ok(&value) {
-            return Err(Error::Script(format!(
-                "{name}: {}",
-                failure(&value).message
-            )));
-        }
-        let description = value
-            .get("description")
-            .ok_or_else(|| Error::Script(format!("{name}: describe answered no description")))
-            .and_then(|d| {
-                description_from_value(d)
-                    .map_err(|e| Error::Script(format!("{name}: {}", e.message)))
-            })?;
+        let description = answer(&engine, "describe", json!({}))
+            .and_then(|d| description_from_value(&d))
+            .map_err(|e| Error::Script(format!("{name}: {}", e.message)))?;
         Ok(JsLanguage {
             engine,
             description,
@@ -202,61 +189,48 @@ impl JsLanguage {
         &self.description
     }
 
-    /// One request to one response over the wire, decoded: the `ok`
-    /// response's value, or the refusal as a `LanguageError`.
-    fn call(&self, request: Value) -> Result<Value, LanguageError> {
-        let line = encode(&request);
-        let response = self.engine.respond(&line).map_err(LanguageError::new)?;
-        let value = decode(&response)?;
-        if ok(&value) {
-            Ok(value)
-        } else {
-            Err(failure(&value))
-        }
+    /// One request to the module, its `result` or its refusal.
+    fn call(&self, method: &str, params: Value) -> Result<Value, LanguageError> {
+        answer(&self.engine, method, params)
     }
 }
 
-fn ok(v: &Value) -> bool {
-    v.get("ok").and_then(Value::as_bool) == Some(true)
-}
-
-/// The `LanguageError` a `{"ok":false,…}` response carries.
-fn failure(v: &Value) -> LanguageError {
-    LanguageError {
-        message: v
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the language refused without a message")
-            .to_owned(),
-        byte_offset: v
-            .get("byte_offset")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize),
-    }
-}
-
-/// One line of the wire as a `Value`.
-fn decode(line: &str) -> Result<Value, LanguageError> {
-    let doc = Document::parse(line.as_bytes(), Format::Json).map_err(|e| {
+/// One JSON-RPC request to one response over the wire, decoded: the
+/// response's `result`, or its `error` as a `LanguageError`.
+fn answer(engine: &engine::Engine, method: &str, params: Value) -> Result<Value, LanguageError> {
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let line = engine
+        .respond(&encode(&request))
+        .map_err(LanguageError::new)?;
+    let mut response = decode(&line).map_err(|e| {
         LanguageError::new(format!(
-            "the language answered something that is not JSON: {e}"
+            "the language answered something that is not JSON: {}",
+            e.message
         ))
     })?;
-    doc.to_value()
-        .map_err(|e| LanguageError::new(format!("the language's answer could not be read: {e}")))
+    if let Some(result) = response.get_mut("result") {
+        return Ok(result.take());
+    }
+    let error = response
+        .get("error")
+        .ok_or_else(|| LanguageError::new("the language answered neither a result nor an error"))?;
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the language refused without a message")
+        .to_owned();
+    let offset = error
+        .get("data")
+        .and_then(|d| d.get("byte_offset"))
+        .and_then(Value::as_u64);
+    Err(match offset {
+        Some(offset) => LanguageError::at(message, offset as usize),
+        None => LanguageError::new(message),
+    })
 }
 
 fn text(v: &[u8]) -> Value {
-    Value::Str(String::from_utf8_lossy(v).into_owned())
-}
-
-fn map(entries: Vec<(&str, Value)>) -> Value {
-    Value::Map(
-        entries
-            .into_iter()
-            .map(|(k, v)| (Value::Str(k.to_owned()), v))
-            .collect(),
-    )
+    Value::String(String::from_utf8_lossy(v).into_owned())
 }
 
 impl Language for JsLanguage {
@@ -267,19 +241,10 @@ impl Language for JsLanguage {
     fn parse(&self, dialect: &str, input: &[u8]) -> Result<NodeTable, LanguageError> {
         // The wire carries text: what is not UTF-8 is refused here, at the
         // first byte that is not, since the module could never see it.
-        let input = std::str::from_utf8(input).map_err(|e| LanguageError {
-            message: "the input is not valid UTF-8".to_owned(),
-            byte_offset: Some(e.valid_up_to()),
-        })?;
-        let response = self.call(map(vec![
-            ("op", Value::Str("parse".to_owned())),
-            ("dialect", Value::Str(dialect.to_owned())),
-            ("input", Value::Str(input.to_owned())),
-        ]))?;
-        let table = response
-            .get("table")
-            .ok_or_else(|| LanguageError::new("the language's parse answered no table"))?;
-        table_from_value(table)
+        let input = std::str::from_utf8(input)
+            .map_err(|e| LanguageError::at("the input is not valid UTF-8", e.valid_up_to()))?;
+        let table = self.call("parse", json!({"dialect": dialect, "input": input}))?;
+        table_from_value(&table)
     }
 
     fn print(
@@ -288,55 +253,53 @@ impl Language for JsLanguage {
         table: &NodeTable,
         options: &PrintOptions,
     ) -> Result<Vec<u8>, LanguageError> {
-        let response = self.call(map(vec![
-            ("op", Value::Str("print".to_owned())),
-            ("dialect", Value::Str(dialect.to_owned())),
-            ("table", table_to_value(table)),
-            (
-                "options",
-                map(vec![
-                    ("pretty", Value::Bool(options.pretty)),
-                    ("strip_comments", Value::Bool(options.strip_comments)),
-                    ("indent", Value::Int(options.indent as i64)),
-                    ("width", Value::Int(options.width as i64)),
-                    ("splice", Value::Bool(options.splice)),
-                ]),
-            ),
-        ]))?;
-        output(&response)
+        let response = self.call(
+            "print",
+            json!({
+                "dialect": dialect,
+                "table": table_to_value(table),
+                "options": {
+                    "pretty": options.pretty,
+                    "strip_comments": options.strip_comments,
+                    "indent": options.indent,
+                    "width": options.width,
+                    "splice": options.splice,
+                    "flow": options.flow,
+                },
+            }),
+        )?;
+        output(response)
     }
 
     fn render(&self, which: Renderer, args: RenderArgs<'_>) -> Result<Vec<u8>, LanguageError> {
-        let name = match which {
-            Renderer::Value => "value",
-            Renderer::Entry => "entry",
-            Renderer::Item => "item",
-            Renderer::Tail => "tail",
-            Renderer::Key => "key",
-        };
-        let response = self.call(map(vec![
-            ("op", Value::Str("render".to_owned())),
-            ("which", Value::Str(name.to_owned())),
-            ("dialect", Value::Str(args.dialect.to_owned())),
-            ("indent", text(args.indent)),
-            ("key", text(args.key)),
-            ("value", text(args.value)),
-            // What fig's bare-literal rules made of the value, for the
-            // value renderer: "null", "bool", "int", "float", "datetime" or
-            // "string".
-            ("literal", Value::Str(args.literal.name().to_owned())),
-            ("old_key", text(args.old_key)),
-        ]))?;
-        output(&response)
+        let response = self.call(
+            "render",
+            json!({
+                "which": which.name(),
+                "dialect": args.dialect,
+                "indent": text(args.indent),
+                "key": text(args.key),
+                "value": text(args.value),
+                // What fig's bare-literal rules made of the value, for the
+                // value renderer: "null", "bool", "int", "float", "datetime"
+                // or "string".
+                "literal": args.literal.name(),
+                "old_key": text(args.old_key),
+                "old_value": text(args.old_value),
+                "parent_key": text(args.parent_key),
+                "parent_tag": text(args.parent_tag),
+            }),
+        )?;
+        output(response)
     }
 }
 
-fn output(response: &Value) -> Result<Vec<u8>, LanguageError> {
-    response
-        .get("output")
-        .and_then(Value::as_str)
-        .map(|s| s.as_bytes().to_vec())
-        .ok_or_else(|| LanguageError::new("the language answered no output"))
+/// A `print` or `render` answer: the text it is.
+fn output(response: Value) -> Result<Vec<u8>, LanguageError> {
+    match response {
+        Value::String(s) => Ok(s.into_bytes()),
+        _ => Err(LanguageError::new("the language answered no output")),
+    }
 }
 
 /// Convenience: [`fig::language::register`] over a module file.

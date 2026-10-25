@@ -73,8 +73,10 @@ const fail = fig.fail;
 // (or the source's end): a trailing `\r` is trimmed.
 const trimCr = (src, start, nl) => (nl > start && at(src, nl - 1) === CR ? nl - 1 : nl);
 
-function trimRightSpaces(src, start, e) {
-  while (e > start && at(src, e - 1) === SP) e -= 1;
+// A plain scalar never ends in a blank: trailing spaces and tabs before a
+// comment or the line's end are not its text (`a: 1\t# c` is `1`).
+function trimRightBlanks(src, start, e) {
+  while (e > start && isBlank(at(src, e - 1))) e -= 1;
   return e;
 }
 
@@ -85,6 +87,25 @@ function whitespaceEnd(src, start, lineEnd) {
 }
 
 const followedByBlank = (src, i, lineEnd) => i + 1 >= lineEnd || isBlank(at(src, i + 1));
+
+// True when `col` is the content column of one of the `- ` that begin the
+// line whose first dash is at `entryDash`, in column `dashCol`: the column
+// just past the first dash, and for a compact nested sequence (`- - - a`)
+// past each later one. Content after the last dash ends the walk.
+function entryContentColumn(src, entryDash, dashCol, col) {
+  if (entryDash == null) return false;
+  let c = entryDash;
+  const lineStart = c - dashCol;
+  let lineEnd = src.indexOf("\n", c + 1);
+  if (lineEnd < 0) lineEnd = src.length;
+  while (c < lineEnd && at(src, c) === DASH && followedByBlank(src, c, lineEnd)) {
+    c += 1;
+    while (c < lineEnd && at(src, c) === SP) c += 1;
+    if (c === lineEnd) return false;
+    if (c - lineStart === col) return true;
+  }
+  return false;
+}
 
 function colonIsIndicator(src, i, lineEnd, flow) {
   if (followedByBlank(src, i, lineEnd)) return true;
@@ -358,7 +379,7 @@ class Tokenizer {
   }
 
   addScalar(s, e) {
-    const te = trimRightSpaces(this.src, s, e);
+    const te = trimRightBlanks(this.src, s, e);
     if (te > s) this.add("scalar", s, te);
   }
 
@@ -416,11 +437,11 @@ class Tokenizer {
       const se = scalarEnd(src, ws, e, false);
       if (se !== e) {
         if (at(src, se) === HASH) {
-          result = { contentEnd: trimRightSpaces(src, ws, se), lastLine: ln };
+          result = { contentEnd: trimRightBlanks(src, ws, se), lastLine: ln };
         }
         break;
       }
-      result = { contentEnd: trimRightSpaces(src, ws, e), lastLine: ln };
+      result = { contentEnd: trimRightBlanks(src, ws, e), lastLine: ln };
       probe = newlineEnd;
     }
     if (result) this.i = result.lastLine.newlineEnd;
@@ -686,8 +707,12 @@ class Tokenizer {
 
   tokenize() {
     const src = this.src;
-    const indentStack = [{ indent: 0, propOnly: false, seqContent: null }];
+    const indentStack = [{ indent: 0, propOnly: false, entryDash: null }];
     let currentIndent = 0;
+
+    // A leading UTF-8 BOM is not content: the first line starts after it,
+    // so its indentation and its first key are read as without one.
+    if (this.i === 0 && src.startsWith("\xef\xbb\xbf")) this.i = 3;
 
     for (;;) {
       const line = this.getLine();
@@ -721,7 +746,7 @@ class Tokenizer {
       const indent = line.contentStart - line.start;
       const propOnly = this.lineIsPropertyOnly(line);
       if (indent > currentIndent) {
-        indentStack.push({ indent, propOnly, seqContent: null });
+        indentStack.push({ indent, propOnly, entryDash: null });
         this.add("indent", line.start, line.contentStart);
         currentIndent = indent;
       } else if (indent < currentIndent) {
@@ -729,23 +754,24 @@ class Tokenizer {
           const popped = indentStack.pop();
           currentIndent = indentStack[indentStack.length - 1].indent;
           if (popped.propOnly && indent > currentIndent) {
-            indentStack.push({ indent, propOnly, seqContent: null });
+            indentStack.push({ indent, propOnly, entryDash: null });
             currentIndent = indent;
             break;
           }
           this.add("dedent", line.contentStart, line.contentStart);
         }
-        if (indent !== currentIndent && indent > currentIndent && indentStack[indentStack.length - 1].seqContent === indent) {
-          indentStack.push({ indent, propOnly, seqContent: null });
+        const last = indentStack[indentStack.length - 1];
+        if (indent !== currentIndent && indent > currentIndent && entryContentColumn(src, last.entryDash, last.indent, indent)) {
+          indentStack.push({ indent, propOnly, entryDash: null });
           currentIndent = indent;
         }
         if (indent !== currentIndent) fail("this line's indentation matches no block open above it", line.contentStart);
       }
 
+      // Where a block-sequence entry begins on its level, so a later dedent
+      // can return to the content column of any `- ` on its line.
       if (at(src, line.contentStart) === DASH && followedByBlank(src, line.contentStart, line.e)) {
-        let c = line.contentStart + 1;
-        while (c < line.e && at(src, c) === SP) c += 1;
-        if (c < line.e) indentStack[indentStack.length - 1].seqContent = c - line.start;
+        indentStack[indentStack.length - 1].entryDash = line.contentStart;
       }
 
       if (indent === 0) {
@@ -1260,6 +1286,14 @@ class Parser {
     const anchor = this.pendingAnchor;
     this.pendingTag = null;
     this.pendingAnchor = null;
+    // An implicit empty (`k: !!str`, `- &a`) is anchored at the separator,
+    // before its properties: it covers them instead, as a written value does,
+    // so a replace takes them rather than writing in front of them (`x !!str`).
+    let after = null;
+    if (s === e) {
+      if (tag && tag.s >= s) after = [tag.s, tag.e];
+      if (anchor && anchor.s >= s) after = after ? [Math.min(after[0], anchor.s), Math.max(after[1], anchor.e)] : [anchor.s, anchor.e];
+    }
     if (tag) {
       if (tag.s < n.span[0]) n.span[0] = tag.s;
       n.tag = tag.text;
@@ -1271,6 +1305,7 @@ class Parser {
       n.anchor_span = [anchor.s, anchor.e];
       this.anchors.push({ name: anchor.name, node: id });
     }
+    if (after) n.span = after;
     this.nodes.push(n);
     if (!this.parkingContainer) this.claimLeading(id);
     return id;
@@ -1523,6 +1558,28 @@ class Parser {
       const id = this.closeContainer(this.spanOf(this.current().id)[1]);
       this.finishValue(id);
     }
+  }
+
+  // Hands a line beginning at column `col` to the open compact item container
+  // (`continuesSequenceItem`) that begins at that column, closing the ones
+  // nested deeper than it on its dash line: in `- - - a\n  - d` the `- d` is
+  // an item of the middle sequence, so the innermost closes, and the middle
+  // one takes the line as its own content by clearing its flag. Containers
+  // left of `col`, and any container that is not a compact item, are left
+  // open. True when a compact item begins at `col`.
+  landContinuations(col) {
+    while (this.stack.length > 0) {
+      const c = this.current();
+      if (!c.continuesSequenceItem) return false;
+      const cCol = this.columnOf(this.spanOf(c.id)[0]);
+      if (cCol < col) return false;
+      c.continuesSequenceItem = false;
+      if (cCol === col) return true;
+      this.closePendingEmptyValue();
+      const id = this.closeContainer(this.spanOf(this.current().id)[1]);
+      this.finishValue(id);
+    }
+    return false;
   }
 
   closeOpenComplexKey() {
@@ -2018,8 +2075,11 @@ class Parser {
       if (this.docEnded && CONTENT_AFTER_END.has(k)) fail("content after `...` begins a second document; this format reads one per file", this.peek().s);
       if (k === "indent") {
         if (this.stack.length > 0 && this.current().continuesSequenceItem) {
-          if (this.columnOf(this.peek().e) > this.currentContainerIndent()) this.forceNewContainer = true;
-          else this.current().continuesSequenceItem = false;
+          const col = this.columnOf(this.peek().e);
+          if (col > this.currentContainerIndent()) this.forceNewContainer = true;
+          // A column between two nested compact items (`   - d` under
+          // `- - - a`) begins no node.
+          else if (!this.landContinuations(col)) fail("this line's indentation matches no block open above it", this.peek().e);
         } else {
           this.forceNewContainer = true;
         }
@@ -2046,10 +2106,11 @@ class Parser {
             if (!closeParentToo) break;
             this.closePendingEmptyValue();
           }
-          if (this.stack.length > 0) {
-            const c = this.current();
-            if (c.continuesSequenceItem && c.kind === "mapping" && this.columnOf(this.spanOf(c.id)[0]) === dedentCol) c.continuesSequenceItem = false;
-          }
+          // A dedent landing exactly at an open compact item's own column
+          // returns to a sibling within that item: the next key of an item
+          // mapping (`- k:\n    v: 1\n  sib: 2`), or the next item of a nested
+          // compact sequence (`- - - a\n    - b\n  - c`).
+          this.landContinuations(dedentCol);
         }
       } else if (k === "newline") {
         this.onDocStartLine = false;
@@ -2666,7 +2727,7 @@ export default {
   // The core schema has a `null` and none of the extended scalars.
   lossless: { null: true },
   syntax: {
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     merge_key: "<<",
     kv_sep: ": ",
     empty_map_literal: "",

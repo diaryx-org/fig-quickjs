@@ -422,7 +422,6 @@ export default {
   caps: { read: true, edit: true, serialize: true },
   syntax: {
     comments: {
-      style: "xml_comment",
       line: { open: "<!--", close: "-->", forbidden: "--" },
       trailing: { open: "<!--", close: "-->", forbidden: "--" },
     },

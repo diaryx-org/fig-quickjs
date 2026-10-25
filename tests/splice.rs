@@ -99,7 +99,7 @@ fn plist_splices_a_scalar_as_its_bare_element_and_renames_a_key_inside_its_eleme
         ed.source().unwrap(),
         "<dict>\n  <key>a</key>\n  <string>x</string>\n  <key>n</key>\n  <integer>42</integer>\n</dict>\n"
     );
-    ed.replace_key(&[key("a")], "b&c").unwrap();
+    ed.rename_key(&[key("a")], "b&c").unwrap();
     assert_eq!(
         ed.source().unwrap(),
         "<dict>\n  <key>b&amp;c</key>\n  <string>x</string>\n  <key>n</key>\n  <integer>42</integer>\n</dict>\n"
@@ -195,7 +195,7 @@ fn js_nestedtext() -> Format {
 /// is in fig's default set: the sources must agree after every one.
 fn both(src: &str, edit: impl Fn(&mut Editor)) -> String {
     let mut mine = Editor::open(src.as_bytes(), js_nestedtext()).unwrap();
-    let mut theirs = Editor::open(src.as_bytes(), Format::Nestedtext).unwrap();
+    let mut theirs = Editor::open(src.as_bytes(), fig_nestedtext::format().unwrap()).unwrap();
     edit(&mut mine);
     edit(&mut theirs);
     let (mine, theirs) = (mine.source().unwrap(), theirs.source().unwrap());
@@ -273,7 +273,10 @@ fn nestedtext_prints_an_empty_container_as_the_compiled_printer_does() {
         Value::Seq(vec![]),
     ] {
         let mine = v.serialize(js_nestedtext()).unwrap();
-        assert_eq!(mine, v.serialize(Format::Nestedtext).unwrap());
+        assert_eq!(
+            mine,
+            v.serialize(fig_nestedtext::format().unwrap()).unwrap()
+        );
         assert_eq!(
             Document::parse(mine.as_bytes(), js_nestedtext())
                 .unwrap()
@@ -310,14 +313,13 @@ fn nestedtext_renders_text_that_opens_with_a_break_and_reads_as_nestedtext_as_ne
         String::from_utf8(
             lang.render(
                 which,
-                RenderArgs {
-                    dialect: "js-nestedtext",
-                    indent: indent.as_bytes(),
-                    key: key.as_bytes(),
-                    value: value.as_bytes(),
-                    literal: Literal::String,
-                    old_key: b"",
-                },
+                RenderArgs::default()
+                    .dialect("js-nestedtext")
+                    .indent(indent.as_bytes())
+                    .key(key.as_bytes())
+                    .value(value.as_bytes())
+                    .literal(Literal::String)
+                    .old_key(b""),
             )
             .unwrap(),
         )
@@ -363,12 +365,10 @@ fn nestedtext_root_tail_takes_a_nested_block_as_it_stands() {
         String::from_utf8(
             lang.render(
                 Renderer::Tail,
-                RenderArgs {
-                    dialect: "js-nestedtext",
-                    value: value.as_bytes(),
-                    literal: Literal::String,
-                    ..Default::default()
-                },
+                RenderArgs::default()
+                    .dialect("js-nestedtext")
+                    .value(value.as_bytes())
+                    .literal(Literal::String),
             )
             .unwrap(),
         )

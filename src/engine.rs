@@ -153,7 +153,7 @@ impl Engine {
 
     /// One request line to one response line — `handle` in the wire's
     /// terms, which never throws: a refusal, a malformed request and a bug
-    /// in the language alike come back as `{"ok":false,…}`. `Err` is the
+    /// in the language alike come back as a JSON-RPC `error`. `Err` is the
     /// engine itself being gone.
     pub fn respond(&self, line: &str) -> Result<String, String> {
         let (reply, answer) = mpsc::channel();
@@ -244,17 +244,29 @@ globalThis.__fig_respond = (line) => handle(lang, line);"#,
                 // `handle` does not throw; this is the engine failing —
                 // out of memory, a stack overflow — reported as a refusal
                 // so the caller sees a message rather than nothing.
-                Err(e) => {
-                    let message = describe_error(&ctx, e);
-                    format!(
-                        r#"{{"ok":false,"message":{}}}"#,
-                        js_string(&format!("the engine failed: {message}"))
-                    )
-                }
+                Err(e) => engine_failed(&job.line, &describe_error(&ctx, e)),
             }
         });
         let _ = job.reply.send(answer);
     }
+}
+
+/// The JSON-RPC error answering `request` when the engine itself failed,
+/// carrying the request's id as `handle` would.
+fn engine_failed(request: &str, message: &str) -> String {
+    let id = serde_json::from_str::<serde_json::Value>(request)
+        .ok()
+        .and_then(|r| r.get("id").cloned())
+        .filter(|id| id.is_string() || id.as_i64().is_some() || id.as_u64().is_some())
+        .unwrap_or(serde_json::Value::Null);
+    fig::helper::encode(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": fig::helper::LANGUAGE_REFUSED,
+            "message": format!("the engine failed: {message}"),
+        },
+    }))
 }
 
 /// `TextEncoder`/`TextDecoder`'s work, and `console`'s: the functions the

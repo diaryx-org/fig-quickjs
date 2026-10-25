@@ -295,6 +295,11 @@ function print(_dialect, t, options) {
   return w.string();
 }
 
+function render(which, args) {
+  if (which === "key_name") return quote(args.key);
+  throw new Error(`no renderer \`${which}\``);
+}
+
 // ── the language ──────────────────────────────────────────────────────────
 
 export default {
@@ -304,16 +309,18 @@ export default {
   // extended scalar rides in a `$fig` envelope.
   lossless: { null: true },
   syntax: {
-    comments: { style: "slashes" },
+    comments: {},
     kv_sep: ": ",
-    key_style: "json_quoted",
     empty_map_literal: "{}",
   },
   // The compiled format owns `.json`, and a compiled format's extension
   // wins, so this is reached by `--lang js-json`.
-  dialects: [{ name: "js-json", extensions: ["json"], splice: "json_string", empty_doc_seed: "{}\n" }],
+  dialects: [{ name: "js-json", extensions: ["json"], splice: "escaped", empty_doc_seed: "{}\n" }],
   samples: ['{"a": 1, "b": [true, null, "s"], "c": {"d": 2.5}}\n', "[]\n"],
-  renderers: [],
+  // A key's name as JSON writes one, for a key the editor inserts or
+  // renames: quoted and escaped, which strict JSON requires.
+  renderers: ["key_name"],
   parse,
   print,
+  render,
 };

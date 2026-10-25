@@ -39,21 +39,34 @@ path = "src/main.rs"
 # module becomes, and the `helper` module's JSON shape is the shape a module
 # speaks — so the JavaScript side is documented once, there, and once more
 # as the `Language` type of `@diaryx/fig`, which is the same shape with the
-# same names. The default feature set, deliberately: it links fig's prebuilt
-# core, so `cargo install fig-quickjs` needs no Zig toolchain, at the price
-# of carrying formats a helper never uses.
-fig = "4"
+# same names. fig is pure Rust from 7 and registers no language by default,
+# so a helper carries only the one it serves; the `helper` feature is the
+# wire, read and written with serde_json.
+fig = { version = "7", features = ["helper"] }
+# The wire's JSON: what `fig::helper`'s functions trade, and what a module's
+# answers are read as.
+serde_json = "1"
 # QuickJS-ng, vendored: the engine is built into the binary, so a helper is
 # one file with no runtime to install beside it. `loader` for the module
 # resolver that serves `fig`, `fig/grammar` and `@diaryx/fig/helper` from
 # the binary; `array-buffer` for the `Uint8Array` the scanner works over.
 rquickjs = { version = "0.13", features = ["loader", "array-buffer"] }
 
-# No dev-dependencies: the tests hold `dotenv.mjs` to the compiled dotenv
-# in-process, and dotenv is in fig's default set. plist and canonical are
-# not — they would mean building fig's core from source, with a Zig
-# toolchain — so those twins are held to their siblings table for table,
-# through the fixtures `fig lang table -i <format>` printed.
+# The compiled languages each twin is held to in-process: since fig 7 each is
+# a crate of its own, and `fig` alone registers none. Only their `fig`
+# feature, which is `register()` and `format()`; not their serde API. plist
+# and canonical are held to their siblings table for table, through the
+# fixtures `fig lang table -i <format>` printed, and not in-process.
+[dev-dependencies]
+fig-dotenv = { version = "7", default-features = false, features = ["fig"] }
+fig-figl = { version = "7", default-features = false, features = ["fig"] }
+fig-ini = { version = "7", default-features = false, features = ["fig"] }
+fig-json = { version = "7", default-features = false, features = ["fig"] }
+fig-nestedtext = { version = "7", default-features = false, features = ["fig"] }
+fig-properties = { version = "7", default-features = false, features = ["fig"] }
+fig-toml = { version = "7", default-features = false, features = ["fig"] }
+fig-yaml = { version = "7", default-features = false, features = ["fig"] }
+fig-zon = { version = "7", default-features = false, features = ["fig"] }
 
 [profile.release]
 # A helper is spawned per `fig` invocation; its size and start-up are what

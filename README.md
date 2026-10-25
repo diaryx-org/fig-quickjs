@@ -101,7 +101,7 @@ the compiled parser step for step, and most are grammars:
   added: flow containers, JSON strings, numbers with their kind pinned,
   extended scalars, anchors, tags and aliases, keys that are any node, `//`
   and `/* */` comments. Every row the wire can carry, in one module; the
-  compiled sibling is opt-in (`zig build -Dcanonical=true`).
+  compiled sibling is opt-in (the `fig` CLI's `canonical` feature).
 
 They are also what a new module is written against: each is a complete
 parser and printer, and `fig lang check <name> --against <format>` is how a
@@ -174,7 +174,7 @@ export default {
   caps: { read: true, edit: true, serialize: true },
   max_mapping_depth: 0,
   syntax: {
-    comments: { style: "hash", line: { open: "#" }, trailing: { open: "#" } },
+    comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: "=",
     empty_map_literal: "{}",
     flow_containers: false,
