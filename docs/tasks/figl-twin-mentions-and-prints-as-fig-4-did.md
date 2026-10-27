@@ -1,13 +1,23 @@
 ---
 title: fig.mjs mentions and prints figl as fig 4 did
 description: fig-quickjs builds against fig 7, and fig.mjs reads every figl fixture to the compiled tree, but its node table lacks the mentions fig 6 added and its printer writes fig 4's flow objects and multi-line string comments
-status: open
+status: done
 created: 2026-10-24
-updated: 2026-10-24
+updated: 2026-10-27
 part_of: "[Tasks](tasks.md)"
 ---
 
 # fig.mjs mentions and prints figl as fig 4 did
+
+**Status.** Done (2026-10-27). `fig.mjs` is fig's own figl twin
+(`bindings/typescript/js/figl.js`) as it stands on fig's `main`, carried
+over with this repository's module names and dialect, so it takes all three
+changes below and the ones made beside them: an inline container the editor
+asks for (`options.flow`) is spelled `{x=1 y=2}` as the compiled format
+spells it. Both lists are gone from `tests/twins.rs`,
+`fig_edits_as_the_compiled_format_does` runs, and
+`fig_refuses_what_the_compiled_format_refuses` holds `fig.mjs` to spec 2.0's
+malformed flow objects.
 
 fig-quickjs moved from fig 4 to fig 7, and the other twins were brought
 level with fig 7's compiled languages. `fig.mjs` was not. It reads each
