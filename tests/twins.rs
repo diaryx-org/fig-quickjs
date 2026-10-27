@@ -593,40 +593,10 @@ fn js_fig() -> Format {
     *FORMAT.get_or_init(|| fig::language::register(module("fig.mjs")).expect("registers")[0])
 }
 
-/// The figl fixtures whose compiled table carries the mentions fig 6 added —
-/// a key that re-opens a container mid-path, and `index` and `append` —
-/// which `fig.mjs` does not record yet; and those the compiled printer writes
-/// in figl spec 2.0's compact flow objects (`{x=1 y=2}`), or with a
-/// multi-line string's comment on its opener line, where `fig.mjs` writes
-/// fig 4's. Each list shrinks as
-/// `docs/tasks/figl-twin-mentions-and-prints-as-fig-4-did.md` is done; every
-/// other fixture, and every other check of these, is held to fig 7 as it is.
-const FIGL_TABLES_AHEAD: &[&str] = &[
-    "append-headers.figl",
-    "dotted-keys.figl",
-    "index-addressing.figl",
-    "kitchen-sink.figl",
-];
-const FIGL_PRINTS_AHEAD: &[&str] = &[
-    "append-headers.figl",
-    "deep.figl",
-    "dotted-keys.figl",
-    "elements.figl",
-    "flow.figl",
-    "index-addressing.figl",
-    "kitchen-sink.figl",
-    "root-sequence.figl",
-    "sections.figl",
-    "strings.figl",
-];
-
 #[test]
 fn fig_parses_every_fixture_to_the_compiled_table() {
     let lang = module("fig.mjs");
     for (name, source, want) in fixtures("fig", "figl") {
-        if FIGL_TABLES_AHEAD.contains(&name.as_str()) {
-            continue;
-        }
         let table = lang
             .parse("js-fig", &source)
             .unwrap_or_else(|e| panic!("{name}: {}", e.message));
@@ -663,13 +633,11 @@ fn fig_registers_and_is_the_compiled_format_at_every_entry_point() {
             theirs.serialize(mine_fmt).unwrap(),
             "{name}: the script prints the two trees differently"
         );
-        if !FIGL_PRINTS_AHEAD.contains(&name.as_str()) {
-            assert_eq!(
-                mine.serialize(mine_fmt).unwrap(),
-                theirs.serialize(compiled::fig()).unwrap(),
-                "{name}: the script's printer differs from the compiled one"
-            );
-        }
+        assert_eq!(
+            mine.serialize(mine_fmt).unwrap(),
+            theirs.serialize(compiled::fig()).unwrap(),
+            "{name}: the script's printer differs from the compiled one"
+        );
         // Compared as printed: `n: float = inf` is a NaN-class float on
         // neither side, but a `nan` would be, and NaN is not equal to itself.
         assert_eq!(
@@ -701,6 +669,20 @@ fn fig_refuses_what_the_compiled_format_refuses() {
         b"a = { x = 1 }\na.y = 2\n",
         b"l\n> * 1\n> k = 2\n",
         b"a = '''abc'''\n",
+        // Spec 2.0's flow objects: a bare value is one token, a member is
+        // `key=value`, and a bare key holds to § 5.1.
+        b"a = {name = Adam Harris}\n",
+        b"a = {x=1 y}\n",
+        b"a = {x=1,,y=2}\n",
+        b"a = {,x=1}\n",
+        b"a = {x=}\n",
+        b"a = {=1}\n",
+        b"a = {@x = 1}\n",
+        b"a = {-x = 1}\n",
+        b"a = {[q = 1}\n",
+        b"a = {x = '''y'''}\n",
+        b"a = {x = 1 # }\n",
+        b"a = {x = \"q\"z}\n",
     ] {
         assert!(
             Document::parse(bad, compiled::fig()).is_err(),
@@ -716,7 +698,6 @@ fn fig_refuses_what_the_compiled_format_refuses() {
 }
 
 #[test]
-#[ignore = "the compiled figl writes spec 2.0's compact flow objects, fig.mjs fig 4's: docs/tasks/figl-twin-mentions-and-prints-as-fig-4-did.md"]
 fn fig_edits_as_the_compiled_format_does() {
     // The section format's editing surface, fig-shaped: values under
     // markers, a key that creates a container, a container deleted with
@@ -759,11 +740,8 @@ fn fig_edits_as_the_compiled_format_does() {
     assert!(out.contains("# the name\ntitle"), "{out}");
 
     // A block map set as a value. The Rust editor spells a `Value` through
-    // the format it is editing, and asks the compiled fig printer for the
-    // flow form by name — a request the wire does not carry — so the
-    // compiled format splices `registry = { a = 1, b = 2 }` while the
-    // script's block spelling goes through its `tail` renderer and lands
-    // as a nested section. Two spellings of one tree.
+    // the format it is editing and asks its printer for the flow form, which
+    // the wire carries as `options.flow`, so both splice the compact object.
     let registry = Value::Map(vec![
         (Value::Str("a".into()), Value::Int(1)),
         (Value::Str("b".into()), Value::Int(2)),
@@ -773,31 +751,10 @@ fn fig_edits_as_the_compiled_format_does() {
     theirs
         .set_value(&[Segment::Key("registry")], registry)
         .unwrap();
-    assert!(
-        mine.source()
-            .unwrap()
-            .contains("registry\n> a = 1\n> b = 2"),
-        "{}",
-        mine.source().unwrap()
-    );
-    assert!(
-        theirs
-            .source()
-            .unwrap()
-            .contains("registry = { a = 1, b = 2 }"),
-        "{}",
-        theirs.source().unwrap()
-    );
-    assert_eq!(
-        Document::parse(mine.source().unwrap().as_bytes(), mine_fmt)
-            .unwrap()
-            .to_value()
-            .unwrap(),
-        Document::parse(theirs.source().unwrap().as_bytes(), compiled::fig())
-            .unwrap()
-            .to_value()
-            .unwrap(),
-    );
+    assert_eq!(mine.source().unwrap(), theirs.source().unwrap());
+    let out = mine.source().unwrap();
+    assert!(out.contains("fresh = {deep={key=1}}"), "{out}");
+    assert!(out.contains("registry = {a=1 b=2}"), "{out}");
 }
 
 #[test]

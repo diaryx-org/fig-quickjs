@@ -6,7 +6,7 @@
 // compiled `fig` reads, this module builds the same node table and prints
 // the same bytes. `fig lang table -i fig` prints that table, and `fig lang
 // check js-fig --against fig <files…>` holds this module to it on any
-// file; where the format is written down is fig's `src/languages/fig/`
+// file; where the format is written down is fig's `languages/figl/`
 // (`DESIGN.md`, `tokenizer.zig`, `parser.zig`, `printer.zig`).
 //
 // The shape, as the compiled parser builds it:
@@ -25,8 +25,15 @@
 //     element records its `*` as `marker`;
 //   * a block container's *regions* are the line that created it and every
 //     later header line that re-opened it by its final segment; its
-//     *mentions* are its key and each such re-opening's key, all of kind
-//     `entry` — a fig header sits on its parent's own lines;
+//     *mentions* are its key and every key that re-opened it, a path's
+//     final segment or one mid-way, of kind
+//     `entry` when the line is one of the parent's own — the line's target,
+//     or a container the line created — and `header` when the path reached
+//     the parent through a container written elsewhere (`p` in `c[].p[]`);
+//   * an element's mentions are where its path is written: each literal
+//     index that addresses it on the line it is written (`index`), and the
+//     `[]` header path that appended it or the `+` that re-ran one
+//     (`append`);
 //   * a bare value is sniffed literal-else-string: `null`, `true`, `false`,
 //     a number with its lexeme kept verbatim, a datetime; a `: type =`
 //     annotation is checked and kept as a `tag` (`!!int`, `!!float`,
@@ -56,6 +63,7 @@
 import * as fig from "fig";
 import * as G from "fig/grammar";
 import * as DT from "fig/datetime";
+import * as N from "fig/number";
 
 // ── refusals ──────────────────────────────────────────────────────────────
 
@@ -90,6 +98,11 @@ const E = {
   FigClosedFlowValue: "a value written inline as `[…]`/`{…}` is closed and cannot be extended later; write the block or header form if it needs to grow",
   FigUnclosedFlow: "this `[`/`{` value never finds its matching close; close it, or quote the whole value to make it a string",
   FigMixedFlowSeparators: "a flow object is fig (`=` pairs) or JSON (`:` pairs), never both in one object",
+  FigFlowMissingEquals: 'every member of a `{…}` object is `key=value`, and an unquoted value is one word; quote a value with spaces: `{name="Adam Harris"}`',
+  FigFlowMissingComma: "separate the members of a `[…]` list (or a JSON-style `{…}` object) with `,`; an unquoted value cannot span lines — quote it",
+  FigFlowEmptyElement: "empty member; remove the extra `,`",
+  FigFlowMultilineString: "a `'''`/`\"\"\"` multi-line string cannot appear inside `[…]`/`{…}`; write the container in block form, or use a single-line quoted string with `\\n`",
+  FigFlowCommentedClose: "inside `[…]`/`{…}`, a `#` after a space starts a comment, and this one hides the closing bracket; quote the value that contains the `#`",
   FigUnclosedString: "unclosed string; add the closing quote (a single-line quote cannot span lines — use `'''` for multi-line)",
   FigBadEscape: "invalid escape; double quotes support \\n \\t \\r \\\\ \\\" \\uXXXX — use single quotes ('…') for raw text with literal backslashes",
 };
@@ -192,31 +205,54 @@ function skipQuotedSpan(bin, start) {
   return null;
 }
 
+// The bracket scanners' state, as `tokenizer.zig`'s `BracketWalk`: depth,
+// which open brackets are `{` (one entry per depth), the last non-whitespace
+// byte, and whether whitespace followed it. Inside a `{`, a quote after
+// whitespace opens a span too — a compact object's quoted key follows a space.
+class BracketWalk {
+  constructor() {
+    this.kinds = [];
+    this.prev = 0;
+    this.prevWs = false;
+  }
+  get depth() {
+    return this.kinds.length;
+  }
+  quoteOpens() {
+    return quoteOpensSpan(this.prev) || (this.prevWs && this.kinds[this.kinds.length - 1] === 123);
+  }
+  byte(c) {
+    this.prev = c;
+    this.prevWs = false;
+  }
+}
+
 function bracketCloseIndex(bin, start) {
-  let depth = 0;
+  const w = new BracketWalk();
   let i = start;
-  let prev = 0;
   while (i < bin.length && bin.charCodeAt(i) !== 10) {
     const c = bin.charCodeAt(i);
-    if (c === 32 || c === 9 || c === 13) i += 1;
-    else if (c === 39 || c === 34) {
-      const opens = quoteOpensSpan(prev);
-      prev = c;
+    if (c === 32 || c === 9 || c === 13) {
+      w.prevWs = true;
+      i += 1;
+    } else if (c === 39 || c === 34) {
+      const opens = w.quoteOpens();
+      w.byte(c);
       if (opens) {
         i = skipQuotedSpan(bin, i);
         if (i === null) return null;
       } else i += 1;
     } else if (c === 91 || c === 123) {
-      depth += 1;
-      prev = c;
+      w.kinds.push(c);
+      w.byte(c);
       i += 1;
     } else if (c === 93 || c === 125) {
-      depth -= 1;
-      prev = c;
+      w.kinds.pop();
+      w.byte(c);
       i += 1;
-      if (depth === 0) return i - 1;
+      if (w.depth === 0) return i - 1;
     } else {
-      prev = c;
+      w.byte(c);
       i += 1;
     }
   }
@@ -251,31 +287,40 @@ function flowRestIsTerminator(bin, from) {
   return c === 44 || c === 93 || c === 125 || c === 10 || c === 35;
 }
 
-function classifyFlowBracket(bin, start) {
-  let depth = 0;
+// Where a compact object's unquoted value (one token) ends.
+const isCompactStop = (c) => c === 32 || c === 9 || c === 13 || c === 10 || c === 44 || c === 93 || c === 125;
+
+// `wsEnds` is set for a compact object's value: whitespace after the close
+// ends the token too, and only glued content makes a bare string.
+function classifyFlowBracket(bin, start, wsEnds) {
+  const w = new BracketWalk();
   let i = start;
-  let prev = 0;
   while (i < bin.length) {
     const c = bin.charCodeAt(i);
-    if (c === 32 || c === 9 || c === 13 || c === 10) i += 1;
-    else if (c === 39 || c === 34) {
-      const opens = quoteOpensSpan(prev);
-      prev = c;
+    if (c === 32 || c === 9 || c === 13 || c === 10) {
+      w.prevWs = true;
+      i += 1;
+    } else if (c === 39 || c === 34) {
+      const opens = w.quoteOpens();
+      w.byte(c);
       if (opens) {
         i = skipQuotedSpan(bin, i);
         if (i === null) return "flow";
       } else i += 1;
     } else if (c === 91 || c === 123) {
-      depth += 1;
-      prev = c;
+      w.kinds.push(c);
+      w.byte(c);
       i += 1;
     } else if (c === 93 || c === 125) {
-      depth -= 1;
-      prev = c;
+      w.kinds.pop();
+      w.byte(c);
       i += 1;
-      if (depth === 0) return flowRestIsTerminator(bin, i) ? "flow" : "bare_trailing";
+      if (w.depth === 0) {
+        const terminal = wsEnds ? i >= bin.length || isCompactStop(bin.charCodeAt(i)) : flowRestIsTerminator(bin, i);
+        return terminal ? "flow" : "bare_trailing";
+      }
     } else {
-      prev = c;
+      w.byte(c);
       i += 1;
     }
   }
@@ -649,8 +694,9 @@ class Parser {
     while (this.pos < this.n && isDigit(this.at(this.pos))) this.pos += 1;
     if (this.pos === start || this.peek() !== 93) this.fail("FigBadKey");
     const n = parseInt(this.bin.slice(start, this.pos), 10);
+    const span = [start, this.pos];
     this.advance();
-    return { index: n };
+    return { index: n, span };
   }
 
   scanKeyPath() {
@@ -666,20 +712,35 @@ class Parser {
 
   // ── path navigation ──
 
-  getOrCreateMapContainer(m, seg) {
+  // `span`, a literal index, as where element node `el` is addressed — on
+  // this line only: a `+` re-runs a header an earlier line wrote.
+  indexMention(el, span) {
+    if (span[0] < this.curLineStart) return;
+    (el.paths ??= []).push({ span, kind: "index" });
+  }
+
+  // Mapping `m`'s container under `seg`, made when there is none. `seg` is
+  // a `mention` of the container it makes or re-opens — `a.b.d = 2` after
+  // `a.b.c = 1` names `a` and `a.b` as surely as the line that made them —
+  // and a null `mention` (a flow object's key, a `+` re-running a header)
+  // records none.
+  getOrCreateMapContainer(m, seg, mention = null) {
     const e = m.index.get(seg.name);
     if (e) {
       if (e.value.value.kind !== "container") this.fail("FigKeyNotContainer");
-      return this.open(e.value.value.container);
+      const c = this.open(e.value.value.container);
+      if (mention !== null) c.reentries.push({ name: seg.span, mention, nameOnly: true });
+      return c;
     }
     const child = newContainer();
-    const entry = { key: seg.name, keySpan: seg.span, sepSpan: [seg.span[1], seg.span[1]], keyLeading: [], value: newNode({ kind: "container", container: child }, [seg.span[0], seg.span[1]]) };
+    const entry = { key: seg.name, keySpan: seg.span, sepSpan: [seg.span[1], seg.span[1]], keyLeading: [], mention: mention ?? "entry", value: newNode({ kind: "container", container: child }, [seg.span[0], seg.span[1]]) };
     m.entries.push(entry);
     m.index.set(entry.key, entry);
     return child;
   }
 
-  getOrCreateSeqContainer(s, idx) {
+  getOrCreateSeqContainer(s, step) {
+    const idx = step.index;
     if (idx === "append") {
       if (s.elements.length === 0) this.fail("FigEmptyAppendTarget");
       const last = s.elements[s.elements.length - 1];
@@ -689,32 +750,49 @@ class Parser {
     if (idx < s.elements.length) {
       const el = s.elements[idx];
       if (el.value.kind !== "container") this.fail("FigKeyNotContainer");
-      return this.open(el.value.container);
+      const c = this.open(el.value.container);
+      this.indexMention(el, step.span);
+      return c;
     } else if (idx === s.elements.length) {
       const child = newContainer();
-      s.elements.push(newNode({ kind: "container", container: child }, [this.curLineStart, this.curLineStart]));
+      const el = newNode({ kind: "container", container: child }, [this.curLineStart, this.curLineStart]);
+      s.elements.push(el);
+      this.indexMention(el, step.span);
       return child;
     }
     this.fail("FigIndexSkipped");
   }
 
-  navigateIntermediate(start, steps) {
+  // The container every step but the last reaches, and the kind of mention
+  // the last step's key is: `entry` when the line is one of that
+  // container's own — the line's target, or a container this line made —
+  // and `header` when the path re-opened one written on an earlier line.
+  // A `+` re-running a header (`rerun`) walks that header's steps, whose
+  // keys are mentioned already.
+  navigateIntermediate(start, steps, rerun = false) {
     let cur = start;
+    let mention = "entry";
     for (let i = 0; i < steps.length - 1; i++) {
       const step = steps[i];
-      if (step.key) cur = this.getOrCreateMapContainer(this.asMapping(cur), step.key);
-      else {
+      if (step.key) {
+        const m = this.asMapping(cur);
+        const fresh = !m.index.has(step.key.name);
+        cur = this.getOrCreateMapContainer(m, step.key, rerun ? null : mention);
+        mention = fresh ? "entry" : "header";
+      } else {
         const s = this.asSequence(cur);
         this.markAddressed(s);
-        cur = this.getOrCreateSeqContainer(s, step.index);
+        const fresh = step.index === s.elements.length;
+        cur = this.getOrCreateSeqContainer(s, step);
+        mention = fresh ? "entry" : "header";
       }
     }
-    return cur;
+    return { container: cur, mention };
   }
 
   // A header line's final segment: the container to push, its owner node,
   // and its entry when reached through a key.
-  resolveHeaderFinal(parent, last) {
+  resolveHeaderFinal({ container: parent, mention }, last) {
     if (last.key) {
       const k = last.key;
       const m = this.asMapping(parent);
@@ -722,11 +800,11 @@ class Parser {
       if (e) {
         if (e.value.value.kind !== "container") this.fail("FigDuplicateKey");
         const c = this.open(e.value.value.container);
-        c.reentries.push({ at: k.span[0], name: k.span });
+        c.reentries.push({ at: k.span[0], name: k.span, mention });
         return [c, e.value, e];
       }
       const child = newContainer();
-      const entry = { key: k.name, keySpan: k.span, sepSpan: [k.span[1], k.span[1]], keyLeading: [], value: newNode({ kind: "container", container: child }, [k.span[0], k.span[1]]) };
+      const entry = { key: k.name, keySpan: k.span, sepSpan: [k.span[1], k.span[1]], keyLeading: [], mention, value: newNode({ kind: "container", container: child }, [k.span[0], k.span[1]]) };
       m.entries.push(entry);
       m.index.set(entry.key, entry);
       return [child, entry.value, entry];
@@ -747,11 +825,13 @@ class Parser {
       if (el.value.kind !== "container") this.fail("FigKeyNotContainer");
       const c = this.open(el.value.container);
       c.reentries.push({ at: this.curLineStart });
+      this.indexMention(el, last.span);
       return [c, el, null];
     } else if (idx === s.elements.length) {
       const child = newContainer();
       const el = newNode({ kind: "container", container: child }, [this.curLineStart, this.curLineStart]);
       s.elements.push(el);
+      this.indexMention(el, last.span);
       return [child, el, null];
     }
     this.fail("FigIndexSkipped");
@@ -936,9 +1016,29 @@ class Parser {
       const c = this.at(this.pos);
       if (c === 32 || c === 9 || c === 13 || c === 10) this.pos += 1;
       else if (c === 35) {
+        const at = this.pos;
         while (this.pos < this.n && this.at(this.pos) !== 10) this.pos += 1;
+        if (/[\]}]/.test(this.bin.slice(at, this.pos))) this.flowCommentClose = at;
       } else return;
     }
+  }
+
+  // Input ran out inside a flow value; a comment that held a close bracket is
+  // the likelier culprit.
+  unclosedFlow() {
+    if (this.flowCommentClose !== undefined) this.failAt(this.flowCommentClose, "FigFlowCommentedClose");
+    this.fail("FigUnclosedFlow");
+  }
+
+  // Content where a flow member should have ended.
+  flowStray(prev, commaMode) {
+    const at = this.pos;
+    const q = this.at(prev.span[0]);
+    const quoted = prev.value.kind === "string" && !prev.value.extKind && (q === 34 || q === 39);
+    if (quoted && at === prev.span[1]) this.failAt(at, "FigQuotedTrailingContent");
+    const c = this.at(at);
+    if (c === 93 || c === 125) this.failAt(at, "FigUnclosedFlow");
+    this.failAt(at, commaMode ? "FigFlowMissingComma" : "FigFlowMissingEquals");
   }
 
   parseFlowValue() {
@@ -952,97 +1052,114 @@ class Parser {
     seq.closed = true;
     seq.kind = "sequence";
     this.skipFlowWs();
-    if (this.peek() === 93) {
-      this.advance();
-      return newNode({ kind: "container", container: seq }, [open, this.pos]);
-    }
     for (;;) {
-      seq.elements.push(this.parseFlowScalarOrNested());
+      const c = this.peek();
+      if (c === undefined) this.unclosedFlow();
+      if (c === 93) {
+        this.advance();
+        break;
+      }
+      if (c === 44) this.fail("FigFlowEmptyElement");
+      const v = this.parseFlowScalarOrNested("list");
+      seq.elements.push(v);
       this.skipFlowWs();
       const p = this.peek();
-      if (p === undefined) this.fail("FigUnclosedFlow");
+      if (p === undefined) this.unclosedFlow();
       if (p === 44) {
         this.advance();
         this.skipFlowWs();
-        if (this.peek() === 93) {
-          this.advance();
-          break;
-        }
-      } else if (p === 93) {
-        this.advance();
-        break;
-      } else this.fail("FigUnclosedFlow");
+      } else if (p !== 93) this.flowStray(v, true);
     }
     return newNode({ kind: "container", container: seq }, [open, this.pos]);
   }
 
-  parseFlowKey() {
-    const c = this.peek();
-    if (c === undefined) this.fail("FigBadKey");
-    const start = this.pos;
-    if (c === 34) {
-      const [t, e] = this.scanDoubleQuoted(this.pos);
-      this.pos = e;
-      return { text: t, quoted: true, span: [start, e] };
+  // A flow object's key: a § 5.1 key path, less the index steps.
+  scanFlowKeyPath() {
+    const segs = [];
+    for (;;) {
+      const start = this.pos;
+      const c = this.peek();
+      if (c === undefined || (c !== 34 && c !== 39 && !isBareKeyChar(c))) this.failAt(start, "FigBadKey");
+      segs.push(this.scanKeySeg());
+      if (this.peek() !== 46) break;
+      this.advance();
     }
-    if (c === 39) {
-      const [t, e] = this.scanSingleQuoted(this.pos);
-      this.pos = e;
-      return { text: t, quoted: true, span: [start, e] };
-    }
-    const stop = (ch) => ch === 44 || ch === 93 || ch === 125 || ch === 58 || ch === 61 || ch === 32 || ch === 9 || ch === 10 || ch === 13;
-    while (this.pos < this.n && !stop(this.at(this.pos))) this.pos += 1;
-    if (this.pos === start) this.fail("FigBadKey");
-    return { text: this.text(start, this.pos), quoted: false, span: [start, this.pos] };
+    if (this.peek() === 91) this.fail("FigBadKey");
+    return segs;
   }
 
+  // `=` pairs are compact (docs/proposals/compact-objects.md): whitespace
+  // separates them, a value is one token, and a key path builds implicit
+  // sub-objects that close with the object. `:` pairs are JSON-spelled.
   parseFlowObject() {
     const open = this.pos;
     this.advance();
     const map = newContainer();
     map.closed = true;
     map.kind = "mapping";
-    this.skipFlowWs();
-    if (this.peek() === 125) {
-      this.advance();
-      return newNode({ kind: "container", container: map }, [open, this.pos]);
-    }
+    const implicit = [];
     let mode = null;
+    this.skipFlowWs();
     for (;;) {
-      const key = this.parseFlowKey();
+      const c = this.peek();
+      if (c === undefined) this.unclosedFlow();
+      if (c === 125) {
+        this.advance();
+        break;
+      }
+      if (c === 44) this.fail("FigFlowEmptyElement");
+      const path = this.scanFlowKeyPath();
+      const last = path[path.length - 1];
       this.skipFlowWs();
+      const sepAt = this.pos;
       const sep = this.peek();
-      if (sep === undefined) this.fail("FigUnclosedFlow");
+      if (sep === undefined) this.unclosedFlow();
       let thisMode;
       if (sep === 61) thisMode = "fig";
       else if (sep === 58) {
-        if (!key.quoted) this.fail("FigFlowBareKeyColon");
+        const q = this.at(last.span[0]);
+        if (path.length > 1) this.failAt(path[0].span[0], "FigBadKey");
+        if (q !== 34 && q !== 39) this.failAt(sepAt, "FigFlowBareKeyColon");
         thisMode = "json";
-      } else this.fail("FigUnclosedFlow");
-      if (mode !== null && mode !== thisMode) this.fail("FigMixedFlowSeparators");
+      } else this.failAt(path[0].span[0], "FigFlowMissingEquals");
+      if (mode !== null && mode !== thisMode) this.failAt(sepAt, "FigMixedFlowSeparators");
       mode = thisMode;
       this.advance();
       this.skipFlowWs();
-      const v = this.parseFlowScalarOrNested();
-      if (map.index.has(key.text)) this.fail("FigDuplicateKey");
-      const entry = { key: key.text, keySpan: key.span, sepSpan: null, keyLeading: [], value: v };
-      map.entries.push(entry);
-      map.index.set(key.text, entry);
-      this.skipFlowWs();
-      const p = this.peek();
-      if (p === undefined) this.fail("FigUnclosedFlow");
-      if (p === 44) {
-        this.advance();
+      const v = this.parseFlowScalarOrNested(thisMode === "fig" ? "compact" : "list");
+
+      let target = map;
+      for (const seg of path.slice(0, -1)) {
+        const fresh = !target.index.has(seg.name);
+        const child = this.asMapping(this.getOrCreateMapContainer(target, seg));
+        if (fresh) implicit.push(child);
+        target = child;
+      }
+      if (target.index.has(last.name)) this.failAt(last.span[0], "FigDuplicateKey");
+      const entry = { key: last.name, keySpan: last.span, sepSpan: null, keyLeading: [], value: v };
+      target.entries.push(entry);
+      target.index.set(last.name, entry);
+
+      if (thisMode === "fig") {
+        const nb = this.peek();
+        if (nb === undefined) this.unclosedFlow();
+        if (!isCompactStop(nb) || nb === 93) this.flowStray(v, false);
         this.skipFlowWs();
-        if (this.peek() === 125) {
+        if (this.peek() === 44) {
           this.advance();
-          break;
+          this.skipFlowWs();
         }
-      } else if (p === 125) {
-        this.advance();
-        break;
-      } else this.fail("FigUnclosedFlow");
+      } else {
+        this.skipFlowWs();
+        const p = this.peek();
+        if (p === undefined) this.unclosedFlow();
+        if (p === 44) {
+          this.advance();
+          this.skipFlowWs();
+        } else if (p !== 125) this.flowStray(v, true);
+      }
     }
+    for (const c of implicit) c.closed = true;
     return newNode({ kind: "container", container: map }, [open, this.pos]);
   }
 
@@ -1060,7 +1177,27 @@ class Parser {
     return [this.text(ts, te), [ts, te]];
   }
 
-  scanFlowBareBracket() {
+  // A compact value is one token; a local date, one space and a time are one
+  // datetime (a time can never be a key).
+  scanCompactBare() {
+    const start = this.pos;
+    const end = (from) => {
+      let i = from;
+      while (i < this.n && !isCompactStop(this.at(i))) i += 1;
+      return i;
+    };
+    this.pos = end(this.pos);
+    if (this.pos < this.n && this.at(this.pos) === 32 && sniffBare(this.bin.slice(start, this.pos)).extKind === "local_date") {
+      const e = end(this.pos + 1);
+      if (e > this.pos + 1) {
+        const k = sniffBare(this.bin.slice(start, e)).extKind;
+        if (k === "local_datetime" || k === "offset_datetime") this.pos = e;
+      }
+    }
+    return [this.text(start, this.pos), [start, this.pos]];
+  }
+
+  scanFlowBareBracket(pos) {
     const start = this.pos;
     let depth = 0;
     let prevSpace = false;
@@ -1072,6 +1209,8 @@ class Parser {
         depth -= 1;
       } else if (ch === 44 || ch === 10) {
         if (depth === 0) break;
+      } else if (ch === 32 || ch === 9 || ch === 13) {
+        if (depth === 0 && pos === "compact") break;
       } else if (ch === 35) {
         if (prevSpace && depth === 0) break;
       }
@@ -1082,37 +1221,39 @@ class Parser {
     return [this.text(ts, te), [ts, te]];
   }
 
-  parseFlowScalarOrNested() {
+  parseFlowScalarOrNested(pos) {
     this.skipFlowWs();
     const c = this.peek();
-    if (c === undefined) this.fail("FigUnclosedFlow");
+    if (c === undefined) this.unclosedFlow();
     if (c === 91 || c === 123) {
-      if (classifyFlowBracket(this.bin, this.pos) === "bare_trailing") {
-        const [text, span] = this.scanFlowBareBracket();
+      if (classifyFlowBracket(this.bin, this.pos, pos === "compact") === "bare_trailing") {
+        const [text, span] = this.scanFlowBareBracket(pos);
         if (text === "") this.fail("FigInvalidValue");
         return newNode({ kind: "string", text }, span);
       }
       return this.parseFlowValue();
     }
+    if ((c === 34 || c === 39) && this.isTripleAt(this.pos, c)) this.fail("FigFlowMultilineString");
     if (c === 34 || c === 39) {
       const start = this.pos;
       const [text, e] = c === 34 ? this.scanDoubleQuoted(this.pos) : this.scanSingleQuoted(this.pos);
       this.pos = e;
       return newNode({ kind: "string", text }, [start, e]);
     }
-    const [text, span] = this.scanFlowBareValue();
+    const [text, span] = pos === "compact" ? this.scanCompactBare() : this.scanFlowBareValue();
     if (text === "") this.fail("FigInvalidValue");
     return this.sniffToNode(text, span);
   }
 
   // ── lines ──
 
-  finishHeader(target, steps, depth) {
+  finishHeader(target, steps, path, depth) {
     if (!this.atEndOfContent()) this.fail("FigTrailingContent");
     const leading = this.drainPending();
     const parent = this.navigateIntermediate(target, steps);
     const last = steps[steps.length - 1];
     const [container, owner, entry] = this.resolveHeaderFinal(parent, last);
+    if (last.index === "append") (owner.paths ??= []).push({ span: path, kind: "append" });
     if (entry) entry.keyLeading.push(...leading);
     else owner.leading.push(...leading);
     const cm = this.scanTrailingCommentOnly();
@@ -1125,7 +1266,7 @@ class Parser {
   finishAssignment(target, steps, typeName, sep) {
     this.skipSpacesTabs();
     const leading = this.drainPending();
-    const parent = this.navigateIntermediate(target, steps);
+    const parent = this.navigateIntermediate(target, steps).container;
     const last = steps[steps.length - 1];
     const valueNode = this.parseAssignedValue(typeName);
     this.consumeLineEnd();
@@ -1145,6 +1286,7 @@ class Parser {
       if (idx < s.elements.length) this.fail("FigIndexAlreadySet");
       if (idx > s.elements.length) this.fail("FigIndexSkipped");
       s.elements.push(valueNode);
+      this.indexMention(valueNode, last.span);
     }
   }
 
@@ -1162,7 +1304,9 @@ class Parser {
   }
 
   parseKeyLine(target, depth) {
+    const pathStart = this.pos;
     const steps = this.scanKeyPath();
+    const path = [pathStart, this.pos];
     this.skipSpacesTabs();
     if (this.peek() === 58) {
       const typeName = this.scanTypeName();
@@ -1173,7 +1317,7 @@ class Parser {
       const eq = [this.pos, this.pos + 1];
       this.advance();
       this.finishAssignment(target, steps, null, eq);
-    } else this.finishHeader(target, steps, depth);
+    } else this.finishHeader(target, steps, path, depth);
   }
 
   parseElementLine(target, depth, star) {
@@ -1233,6 +1377,7 @@ class Parser {
   }
 
   parseContinuationLine(depth) {
+    const plus = [this.pos, this.pos + 1];
     this.advance(); // +
     if (depth !== 0) this.fail("FigDanglingContinuation");
     const steps = this.lastAppendSteps;
@@ -1240,8 +1385,9 @@ class Parser {
     this.skipSpacesTabs();
     if (!this.atEndOfContent()) this.fail("FigTrailingContent");
     const leading = this.drainPending();
-    const parent = this.navigateIntermediate(this.root, steps);
+    const parent = this.navigateIntermediate(this.root, steps, true);
     const [container, owner] = this.resolveHeaderFinal(parent, steps[steps.length - 1]);
+    (owner.paths ??= []).push({ span: plus, kind: "append" });
     owner.leading.push(...leading);
     const cm = this.scanTrailingCommentOnly();
     if (cm !== null) owner.trailing = cm;
@@ -1291,7 +1437,8 @@ class Parser {
 
 // A block container is a section: the line that created it is its first
 // region, and every header that re-entered it by its final segment adds a
-// region and, when the segment is a key, a mention.
+// region and, when the segment is a key, a mention. A path that re-opened
+// it mid-way adds a mention alone.
 function isSection(node) {
   const v = node.value;
   return v.kind === "container" && !v.container.closed && !v.container.isRoot;
@@ -1299,7 +1446,8 @@ function isSection(node) {
 
 function reenter(S, built, c) {
   for (const r of c.reentries) {
-    if (r.name) S.reopen(built, r.name, "entry");
+    if (r.nameOnly) S.mention(built, r.name, r.mention);
+    else if (r.name) S.reopen(built, r.name, r.mention);
     else S.region(built, r.at);
   }
 }
@@ -1321,7 +1469,7 @@ function buildNode(S, node) {
         if (e.sepSpan) kv.sep = e.sepSpan;
         if (e.value.span[1] > end) end = e.value.span[1];
         if (isSection(e.value)) {
-          S.open(built, kv, "entry");
+          S.open(built, kv, e.mention ?? "entry");
           reenter(S, value, e.value.value.container);
         } else {
           built.put(kv);
@@ -1339,6 +1487,7 @@ function buildNode(S, node) {
           S.region(item, el.span[0]);
           reenter(S, item, el.value.container);
         }
+        for (const m of el.paths ?? []) S.mention(item, m.span, m.kind);
       }
     }
     if (end > node.span[1]) node.span[1] = end;
@@ -1381,6 +1530,8 @@ function parse(_dialect, input) {
 // with hoisting past depth 2, `path[]`/`+` append groups for lists of
 // maps, multi-line flow for long scalar lists, comments as conservative
 // blockers. Widths are byte widths, as the compiled printer counts them.
+// A value's position (`inFlow`) is `false` (block), "list" (an array element)
+// or "compact" (a `{…}` object's value, one token).
 
 const MAX_BODY_DEPTH = 2;
 const MAX_INLINE_SEQ_ITEMS = 6;
@@ -1401,8 +1552,9 @@ function isTotalSinkSafe(s) {
   return true;
 }
 
-function flowLeadingBracketBare(s) {
-  if (classifyFlowBracket(fig.binOf(s), 0) !== "bare_trailing") return false;
+function flowLeadingBracketBare(s, compact) {
+  if (classifyFlowBracket(fig.binOf(s), 0, compact) !== "bare_trailing") return false;
+  if (compact && /[ \t]/.test(s)) return false;
   let depth = 0;
   let prevSpace = false;
   for (const ch of s) {
@@ -1432,10 +1584,11 @@ function isBareSafe(s, isKey, inFlow) {
     const f = s[0];
     if (f === "'" || f === '"') return false;
     if (f === "[" || f === "{") {
-      if (inFlow) return flowLeadingBracketBare(s);
+      if (inFlow) return flowLeadingBracketBare(s, inFlow === "compact");
       if (classifyBracketCommit(fig.binOf(s), 0) !== "bare_trailing") return false;
     }
     if (inFlow && /[,\]}]/.test(s)) return false;
+    if (inFlow === "compact" && s.includes(" ")) return false;
     let prevWs = true;
     for (const ch of s) {
       if (ch === "#" && prevWs) return false;
@@ -1466,9 +1619,11 @@ function bareOrQuoted(s, isKey, inFlow) {
   return '"' + s.replace(/["\\\n\r\t]/g, (ch) => ESCAPES[ch]) + '"';
 }
 
-function multilineString(s) {
-  if (!s.includes("'''") && !s.includes("\r")) return "'''\n" + s + "\n'''";
-  return '"""\n' + s.replace(/[\\"\r]/g, (ch) => (ch === "\\" ? "\\\\" : ch === '"' ? '\\"' : "\\r")) + '\n"""';
+// `comment` (the value's ` # …`, or "") goes on the opener line, where the
+// value's comment lives (spec § 4.6).
+function multilineString(s, comment = "") {
+  if (!s.includes("'''") && !s.includes("\r")) return "'''" + comment + "\n" + s + "\n'''";
+  return '"""' + comment + "\n" + s.replace(/[\\"\r]/g, (ch) => (ch === "\\" ? "\\\\" : ch === '"' ? '\\"' : "\\r")) + '\n"""';
 }
 
 function charLiteral(text) {
@@ -1553,12 +1708,13 @@ class Printer {
     const k = row.kind;
     if (k === "null") return 4;
     if (k === "bool") return row.text === "true" ? 4 : 5;
-    if (k === "int" || k === "float") return row.ext_kind ? null : blen(row.text);
+    // A non-finite float needs `: float =`, as a `number_special` does.
+    if (k === "int" || k === "float") return row.ext_kind || isNonFinite(row) ? null : blen(row.text);
     if (k === "string") {
       const e = row.ext_kind;
       if (e) return DT.KINDS.has(e) ? blen(row.text) : null;
       if (typeof row.text === "string" && row.text.includes("\n")) return null;
-      return scalarStringWidth(row.text ?? "", false, true);
+      return scalarStringWidth(row.text ?? "", false, "list");
     }
     if (k === "sequence") {
       let w = 2;
@@ -1571,14 +1727,15 @@ class Printer {
     }
     if (k === "mapping") {
       if (row.items.length === 0) return 2;
-      let w = 4;
+      let w = 2;
       for (let i = 0; i < row.items.length; i++) {
         const e = row.items[i];
         if (this.commentsOn() && e.key.leading.length > 0) return null;
         if (e.value.kind === "mapping") return null;
-        const vw = this.inlineWidth(e.value, "strict");
+        let vw = this.inlineWidth(e.value, "strict");
         if (vw === null) return null;
-        w += this.keyWidth(e.key) + 3 + vw + (i > 0 ? 2 : 0);
+        if (e.value.kind === "string" && !e.value.ext_kind) vw = scalarStringWidth(e.value.text ?? "", false, "compact");
+        w += this.keyWidth(e.key) + 1 + vw + (i > 0 ? 1 : 0);
       }
       return w;
     }
@@ -1681,10 +1838,25 @@ class Printer {
   }
 
   trailingComment(row) {
+    this.put(this.trailingText(row));
+  }
+
+  // The ` # …` a value's trailing comment prints as, or "".
+  trailingText(row) {
     const c = this.trailingOf(row);
-    if (!c) return;
-    this.put(" #");
-    if (c.text !== "") this.put(" ", c.text.replace(/\n/g, " "));
+    if (!c) return "";
+    return c.text === "" ? " #" : " # " + c.text.replace(/\n/g, " ");
+  }
+
+  // A block-position scalar and its trailing comment: after the value, or for
+  // a multi-line string on its opener line (`x = ''' # note`).
+  scalarAndComment(row) {
+    if (row.kind === "string" && !row.ext_kind && isMultiline(row)) {
+      this.put(multilineString(row.text, this.trailingText(row)));
+      return;
+    }
+    this.value(row, false);
+    this.trailingComment(row);
   }
 
   typeAnnotation(row) {
@@ -1714,7 +1886,7 @@ class Printer {
       this.put(": char");
       return true;
     }
-    if (e === "number_special") {
+    if (e === "number_special" || isNonFinite(row)) {
       this.put(": float");
       return true;
     }
@@ -1725,9 +1897,16 @@ class Printer {
     const k = row.kind;
     if (k === "null") this.put("null");
     else if (k === "bool") this.put(row.text);
-    else if (k === "int" || k === "float") this.put(row.ext_kind === "char_literal" ? charLiteral(row.text) : row.text);
-    else if (k === "string") {
-      if (row.ext_kind) this.put(row.text);
+    else if (k === "int" || k === "float") {
+      // A non-finite float takes the annotated parser's own words, after the
+      // `: float` `typeAnnotation` wrote. Flow has no annotation.
+      if (isNonFinite(row)) {
+        if (inFlow) throw new Error(NON_FINITE);
+        this.put(N.nonFinite(row.text));
+      } else this.put(row.ext_kind === "char_literal" ? charLiteral(row.text) : row.text);
+    } else if (k === "string") {
+      if (row.ext_kind === "number_special" && inFlow) throw new Error(NON_FINITE);
+      else if (row.ext_kind) this.put(row.text);
       else if (!inFlow && isMultiline(row)) this.put(multilineString(row.text));
       else if (!inFlow && this.kindTag(row) === "string") this.put(row.text);
       else this.put(bareOrQuoted(row.text ?? "", false, inFlow));
@@ -1741,18 +1920,18 @@ class Printer {
       this.put("[");
       row.items.forEach((el, i) => {
         if (i > 0) this.put(", ");
-        this.value(el, true);
+        this.value(el, "list");
       });
       this.put("]");
     } else if (row.kind === "mapping") {
       if (row.items.length === 0) return this.put("{}");
-      this.put("{ ");
+      this.put("{");
       row.items.forEach((e, i) => {
-        if (i > 0) this.put(", ");
-        this.put(bareOrQuoted(this.keyText(e.key), true, false), " = ");
-        this.value(e.value, true);
+        if (i > 0) this.put(" ");
+        this.put(bareOrQuoted(this.keyText(e.key), true, false), "=");
+        this.value(e.value, "compact");
       });
-      this.put(" }");
+      this.put("}");
     } else throw new Error("a " + row.kind + " has no flow spelling");
   }
 
@@ -1764,7 +1943,7 @@ class Printer {
     for (const el of row.items) {
       this.put(" ".repeat(inner));
       if (el.kind === "sequence" && el.items.length > 0 && !this.seqFitsInline(el, inner + 1, "strict")) this.multilineFlowSeq(el, inner, null);
-      else this.value(el, true);
+      else this.value(el, "list");
       this.put(",\n");
     }
     this.put(" ".repeat(indent), "]");
@@ -1817,8 +1996,7 @@ class Printer {
     } else {
       this.typeAnnotation(v);
       this.put(" = ");
-      this.value(v, false);
-      this.trailingComment(v);
+      this.scalarAndComment(v);
       this.put("\n");
     }
   }
@@ -1857,8 +2035,7 @@ class Printer {
       } else {
         const annotated = this.typeAnnotation(el);
         this.put(annotated ? " = " : " ");
-        this.value(el, false);
-        this.trailingComment(el);
+        this.scalarAndComment(el);
         this.put("\n");
       }
     }
@@ -1902,7 +2079,9 @@ class Printer {
     } else {
       this.typeAnnotation(v);
       this.put(" = ");
-      this.value(v, false);
+      this.scalarAndComment(v);
+      this.put("\n");
+      return;
     }
     this.trailingComment(v);
     this.put("\n");
@@ -2007,16 +2186,30 @@ const elementPrefixWidth = (depth) => MARKER_CELL * (depth + 1);
 function flowQuotesWhatBlockLeavesBare(row) {
   if (row.kind === "string" && !row.ext_kind) {
     const s = row.text ?? "";
-    return !isBareSafe(s, false, true) && isBareSafe(s, false, false);
+    return !isBareSafe(s, false, "list") && isBareSafe(s, false, false);
   }
   if (row.kind === "sequence") return row.items.some(flowQuotesWhatBlockLeavesBare);
   return false;
 }
 
+// An infinite or NaN float where no `: float =` annotation can go.
+const NON_FINITE = "figl writes an infinite number or NaN only as `key: float = inf`, which has no place here";
+
+// Whether `row` is a number another format spelled non-finite (`.inf`,
+// `Infinity`), which figl reads bare as a string.
+const isNonFinite = (row) => (row.kind === "int" || row.kind === "float") && !row.ext_kind && N.nonFinite(row.text ?? "") !== null;
+
 function print(_dialect, t, options) {
   fig.index(t);
   const root = t.byid(0);
   const p = new Printer(options);
+  // A container the editor splices after `key = ` is spelled inline: a
+  // block section there would re-read as a string.
+  if (options?.flow === true && (root.kind === "mapping" || root.kind === "sequence")) {
+    p.flowValue(root);
+    p.put("\n");
+    return p.w.string();
+  }
   p.leadingComments(root, 0);
   if (root.kind === "mapping") {
     for (const e of root.items) p.emitSection(e);
@@ -2025,7 +2218,8 @@ function print(_dialect, t, options) {
   else {
     // A scalar root is a fragment — a value the editor will splice after
     // `key = ` — and takes its ordinary spelling; a whole document is never
-    // a scalar.
+    // a scalar. The annotation a non-finite float needs cannot go there.
+    if (root.ext_kind === "number_special" || isNonFinite(root)) throw new Error(NON_FINITE);
     p.value(root, false);
     p.put("\n");
   }
@@ -2073,15 +2267,25 @@ export default {
   syntax: {
     comments: { line: { open: "#" }, trailing: { open: "#" } },
     kv_sep: " = ",
+    // An `=`-mode flow object is compact, as `fig fmt` writes it: `{x=1 y=2}`.
     flow_kv_sep_from_siblings: true,
-    flow_map_pad: " ",
+    flow_map_kv_sep: "=",
+    flow_map_entry_sep: " ",
     empty_map_literal: "{}",
+    empty_seq_literal: "[]",
     // The `>` run that opens a line is depth, not whitespace: a line the
     // engine writes repeats it; one level is one `> ` cell, an element `* `.
     structural_indent: true,
     indent_unit: "> ",
     seq_item_marker: "* ",
+    // A line may open with its `>` depth run and a `+` line's mark before the
+    // node it holds.
+    line_prefix_marks: ">+",
     section_noun: "container",
+    // A `'''`/`"""` string's comment lives on its opener line:
+    // `x = ''' # note`; so does a multi-line flow list's or object's
+    // whose opener line holds no element: `xs = [ # note`.
+    opener_line_comment: true,
   },
   // The compiled format owns `.figl` and `.fig`, and a compiled format's
   // extension wins, so this is reached by `--lang js-fig`.
