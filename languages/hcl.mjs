@@ -39,12 +39,12 @@
 //
 // Partial by design, and the tree says where: the generic editor replaces
 // an attribute's value, adds an attribute to a body with attributes in it
-// (after its last attribute) or with only nested blocks in it (under its
-// header line, unindented, for now) but never to an empty `{}`, which is
-// refused, deletes one, comments one, and deleting a block is the
-// container op; tuples
-// take no item in place; a new block, a new label and a vivified path
-// are not spelled, since the engine's header syntax is a `[table]` line;
+// (after its last attribute) or with only nested blocks in it (after its
+// last block, at that block's indent) but never to an empty `{}`, which
+// is refused, deletes one, comments one (but not one with a line opening
+// with `>`), and deleting a block is the container op; tuples take no
+// item in place; a new block, a new label and a vivified path are not
+// spelled, since the engine's header syntax is a `[table]` line;
 // and an attribute added to a label level, which HCL has no place for,
 // lands after that level's last block, where `terraform validate` will
 // refuse it. A value `set` writes is text, quoted; a tuple, an object, a
@@ -483,6 +483,7 @@ class Parser {
       const what = existing.value.tag === "!block" || existing.value.tag === "!labels" || existing.value.kind === "sequence" ? "a block" : "an attribute";
       this.fail("`" + e.key.text + "` is already " + what + " in this body; an attribute cannot repeat", e.key.span[0]);
     }
+    m.holdsAttribute = true;
     m.put(e);
   }
 
@@ -515,6 +516,11 @@ class Parser {
     for (const c of lead) body.comment("leading", c.text, c.style);
     ctx.last = null;
     this.body(body, true, open);
+    // In a body of nothing but blocks, each block is a line of the body:
+    // the engine anchors a new attribute after an entry on a body's own
+    // lines and copies that entry's indent, and a `header` mention would
+    // put every block out of the body's lines, leaving it neither.
+    if (!body.holdsAttribute) for (const e of body.entries) for (const m of e.value.mentions ?? []) m.kind = "entry";
     const close = sc.pos;
     sc.advance();
     body.span = [open, sc.pos];
@@ -562,8 +568,8 @@ class Parser {
     // block of the path makes.
     body.header = { start, close, mention: mention.span };
     // A body's mentions are of the `header` kind: its header line is a
-    // line of its own, so the engine splices an attribute into the body
-    // rather than treating it as a table its parent's lines write.
+    // line of its own, and an attribute of the body it sits in stays
+    // above it. `block` makes them `entry` in a body with no attribute.
     const section = (node, h) => {
       S.region(node, h.start);
       S.region(node, h.close);
@@ -822,6 +828,13 @@ export default {
     // to vivify a block with.
     empty_map_literal: null,
     flow_containers: false,
+    // What lets a block with `entry` mentions take an attribute: the
+    // engine splices into it, not into the lines of the body holding it,
+    // where a format's line prefix is structural. A line's prefix here is
+    // its whitespace, so little else differs: `comment_out` refuses an
+    // attribute with a line opening with `>`, whose marker it writes past
+    // that `>`, and a one-line block still takes nothing in place.
+    structural_indent: true,
     block_seq_editable: false,
     indent_unit: "  ",
     section_noun: "container",
