@@ -683,7 +683,6 @@ fn hcl_edits_attributes_and_refuses_what_it_cannot_spell() {
 }
 
 #[test]
-#[ignore = "fig 7 splices the attribute under the body's header line, unindented: docs/tasks/hcl-attribute-into-a-body-of-blocks.md"]
 fn hcl_puts_an_attribute_after_the_blocks_of_a_body_with_no_attributes() {
     let src = b"terraform {\n  required_providers {\n    aws = {\n      source = \"hashicorp/aws\"\n    }\n  }\n}\n";
     let mut ed = Editor::open(src, js_hcl()).unwrap();
@@ -693,4 +692,88 @@ fn hcl_puts_an_attribute_after_the_blocks_of_a_body_with_no_attributes() {
         ed.source().unwrap(),
         "terraform {\n  required_providers {\n    aws = {\n      source = \"hashicorp/aws\"\n    }\n  }\n  required_version = \">= 1.5\"\n}\n"
     );
+}
+
+#[test]
+fn hcl_puts_an_attribute_after_a_repeated_block_and_a_labelled_one() {
+    let mut ed = Editor::open(
+        b"a {\n  b {\n    c = 1\n  }\n  b {\n    c = 2\n  }\n}\n",
+        js_hcl(),
+    )
+    .unwrap();
+    ed.insert_value(&[key("a")], "k", "v").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  b {\n    c = 1\n  }\n  b {\n    c = 2\n  }\n  k = \"v\"\n}\n"
+    );
+
+    let mut ed = Editor::open(b"a {\n  b \"x\" {\n    c = 1\n  }\n}\n", js_hcl()).unwrap();
+    ed.insert_value(&[key("a")], "k", "v").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  b \"x\" {\n    c = 1\n  }\n  k = \"v\"\n}\n"
+    );
+}
+
+// A tuple is a sequence too, and an attribute: the body holding one is not
+// a body of blocks, and the attribute lands above the block as it did.
+#[test]
+fn hcl_keeps_a_new_attribute_above_the_blocks_of_a_body_with_attributes() {
+    let src = b"a {\n  t = [1]\n\n  b {\n    c = 1\n  }\n}\n";
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    ed.insert_value(&[key("a")], "k", "v").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  t = [1]\n  k = \"v\"\n\n  b {\n    c = 1\n  }\n}\n"
+    );
+}
+
+#[test]
+fn hcl_edits_a_block_in_a_body_of_blocks_as_any_other() {
+    let src = b"a {\n  b {\n    c {\n      d = 1\n    }\n  }\n}\n";
+    let b = [key("a"), key("b")];
+    let c = [key("a"), key("b"), key("c")];
+
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    ed.insert_value(&c, "k", "v").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  b {\n    c {\n      d = 1\n      k = \"v\"\n    }\n  }\n}\n"
+    );
+
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    ed.insert_value(&b, "k", "v").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  b {\n    c {\n      d = 1\n    }\n    k = \"v\"\n  }\n}\n"
+    );
+
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    ed.rename_container(&b, "z").unwrap();
+    assert_eq!(
+        ed.source().unwrap(),
+        "a {\n  z {\n    c {\n      d = 1\n    }\n  }\n}\n"
+    );
+
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    ed.delete_container(&c).unwrap();
+    assert_eq!(ed.source().unwrap(), "a {\n  b {\n  }\n}\n");
+
+    // Still not a line to delete, nor a value to replace.
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    assert!(ed.delete_key(&b).is_err());
+    assert!(ed.replace_value(&b, "x").is_err());
+    assert_eq!(ed.source().unwrap().as_bytes(), src);
+}
+
+// `structural_indent`, which a block in a body of blocks needs, has the
+// engine write a comment marker past a line's leading `>`, figl's prefix. In
+// HCL that leaves the `>` bare in the body, so the edit does not parse: it is
+// refused whole, and nothing is written.
+#[test]
+fn hcl_refuses_to_comment_out_an_attribute_with_a_line_opening_with_a_greater_than() {
+    let src = b"x = (a\n  > b)\ny = 1\n";
+    let mut ed = Editor::open(src, js_hcl()).unwrap();
+    assert!(ed.comment_out(&[key("x")]).is_err());
+    assert_eq!(ed.source().unwrap().as_bytes(), src);
 }
